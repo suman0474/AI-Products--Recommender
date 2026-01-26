@@ -545,14 +545,12 @@ const EnGenieChat = () => {
                         </DropdownMenu>
                     </div>
                 }
-            >
-                <div className="flex items-center gap-2">
-                    <img src="/icon-engenie.png" alt="EnGenie" className="w-12 h-12 object-contain" />
-                    <h1 className="text-2xl font-bold text-[#0f172a]">
-                        Chat
+                centerContent={
+                    <h1 className="text-2xl font-bold text-[#0f172a] flex items-center gap-3">
+                        Engenie <span className="text-primary text-2xl leading-none pt-1">♦</span> Chat
                     </h1>
-                </div>
-            </MainHeader>
+                }
+            />
 
             {/* Chat Messages */}
             <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 pt-24 space-y-4 custom-no-scrollbar pb-24">

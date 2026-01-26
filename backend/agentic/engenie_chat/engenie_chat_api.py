@@ -6,7 +6,6 @@ to Index RAG, Standards RAG, Strategy RAG, and Deep Agent.
 """
 
 import logging
-from functools import wraps
 from flask import Blueprint, request, jsonify, session
 
 from .engenie_chat_orchestrator import run_engenie_chat_query
@@ -14,20 +13,16 @@ from .engenie_chat_memory import (
     get_session_summary, clear_session, cleanup_expired_sessions
 )
 
+# Import consolidated decorators
+from agentic.auth_decorators import login_required
+
 logger = logging.getLogger(__name__)
 
 # Create blueprint
 engenie_chat_bp = Blueprint('engenie_chat', __name__, url_prefix='/api/engenie-chat')
 
 
-# Login required decorator
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'Authentication required'}), 401
-        return f(*args, **kwargs)
-    return decorated_function
+# Note: login_required is now imported from auth_decorators module
 
 
 @engenie_chat_bp.route('/query', methods=['POST'])

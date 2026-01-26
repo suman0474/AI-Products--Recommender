@@ -540,7 +540,8 @@ def get_standards_rag_workflow():
 def run_standards_rag_workflow(
     question: str,
     session_id: Optional[str] = None,
-    top_k: int = 5
+    top_k: int = 5,
+    recursion_limit: int = 50
 ) -> Dict[str, Any]:
     """
     Run the Standards RAG workflow.
@@ -549,6 +550,7 @@ def run_standards_rag_workflow(
         question: User's question
         session_id: Optional session ID for checkpointing
         top_k: Number of documents to retrieve
+        recursion_limit: Maximum recursion depth for workflow (default: 50, LangGraph default: 25)
 
     Returns:
         Final result dictionary
@@ -567,8 +569,13 @@ def run_standards_rag_workflow(
 
     # Execute workflow
     try:
-        # Run with config for checkpointing
-        config = {"configurable": {"thread_id": session_id or "default"}}
+        # Run with config for checkpointing and increased recursion limit
+        # FIX: Increase recursion limit from LangGraph default of 25 to 50
+        # This fixes "Recursion limit of 25 reached without hitting a stop condition" errors
+        config = {
+            "configurable": {"thread_id": session_id or "default"},
+            "recursion_limit": recursion_limit
+        }
         final_state = app.invoke(initial_state, config=config)
 
         logger.info(f"Workflow completed with status: {final_state.get('status', 'unknown')}")

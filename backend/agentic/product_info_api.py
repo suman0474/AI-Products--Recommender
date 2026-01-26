@@ -6,7 +6,6 @@ to Index RAG, Standards RAG, Strategy RAG, and Deep Agent.
 """
 
 import logging
-from functools import wraps
 from flask import Blueprint, request, jsonify, session
 
 from .product_info_orchestrator import run_product_info_query
@@ -14,20 +13,16 @@ from .product_info_memory import (
     get_session_summary, clear_session, cleanup_expired_sessions
 )
 
+# Import consolidated decorators
+from .auth_decorators import login_required
+
 logger = logging.getLogger(__name__)
 
 # Create blueprint
 product_info_bp = Blueprint('product_info', __name__, url_prefix='/api/product-info')
 
 
-# Login required decorator
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'Authentication required'}), 401
-        return f(*args, **kwargs)
-    return decorated_function
+# Note: login_required is now imported from auth_decorators module
 
 
 @product_info_bp.route('/query', methods=['POST'])

@@ -21,7 +21,6 @@ Usage:
 import logging
 from typing import Dict, Any
 from flask import Blueprint, request, jsonify, session
-from functools import wraps
 
 from .session_orchestrator import get_session_orchestrator
 from .instance_manager import get_instance_manager, InstanceStatus
@@ -34,6 +33,10 @@ from .orchestrator_utils import (
     validate_main_thread_id
 )
 
+# Import consolidated decorators and utilities
+from .auth_decorators import login_required
+from .api_utils import api_response, handle_errors
+
 logger = logging.getLogger(__name__)
 
 # Create Blueprint
@@ -42,42 +45,10 @@ instances_bp = Blueprint('instances', __name__, url_prefix='/api/agentic/instanc
 
 
 # ============================================================================
-# DECORATORS
+# DECORATORS (imported from auth_decorators and api_utils)
 # ============================================================================
-
-def login_required(func):
-    """Decorator to require login for endpoints"""
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({"success": False, "error": "Unauthorized: Please log in"}), 401
-        return func(*args, **kwargs)
-    return decorated_function
-
-
-def handle_errors(f):
-    """Decorator for error handling"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"Session API Error: {e}", exc_info=True)
-            return jsonify({
-                "success": False,
-                "error": str(e)
-            }), 500
-    return decorated_function
-
-
-def api_response(success: bool, data: Any = None, error: str = None, status_code: int = 200):
-    """Create standardized API response"""
-    response = {
-        "success": success,
-        "data": data,
-        "error": error
-    }
-    return jsonify(response), status_code
+# Note: login_required, handle_errors, and api_response are now imported
+# from consolidated modules for consistency across all API endpoints.
 
 
 # ============================================================================

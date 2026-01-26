@@ -637,6 +637,35 @@ def format_selection_list_node(state: InstrumentIdentifierState) -> InstrumentId
         # === MERGE DEEP AGENT SPECS FOR UI DISPLAY ===
         # This ensures Deep Agent specifications are shown in UI with [STANDARDS] labels
         _merge_deep_agent_specs_for_display(state["all_items"])
+
+        # === ADD GENERIC IMAGES TO ITEMS ===
+        # Batch fetch generic images for all items
+        try:
+            from generic_image_utils import fetch_generic_images_batch
+            
+            # Collect product types
+            product_types = []
+            for item in state["all_items"]:
+                # Use name or category as product type
+                p_type = item.get("name") or item.get("category") or "Instrument"
+                product_types.append(p_type)
+            
+            # Fetch batch (fast parallel cache check)
+            if product_types:
+                logger.info(f"[IDENTIFIER] Fetching generic images for {len(product_types)} items...")
+                image_results = fetch_generic_images_batch(product_types)
+                
+                # Attach images to items
+                for item in state["all_items"]:
+                    p_type = item.get("name") or item.get("category") or "Instrument"
+                    if p_type in image_results and image_results[p_type]:
+                        item["image_url"] = image_results[p_type].get("url")
+                    else:
+                        # Fallback or placeholder handling done by frontend if url is missing
+                        pass
+        except Exception as img_err:
+             logger.warning(f"[IDENTIFIER] Failed to fetch generic images: {img_err}")
+        
         logger.info(f"[IDENTIFIER] Merged Deep Agent specs for {len(state['all_items'])} items")
         # === END MERGE ===
 

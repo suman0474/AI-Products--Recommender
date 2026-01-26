@@ -1,57 +1,58 @@
-# agentic/index_rag_memory.py
-# Conversation Memory for Index RAG
-# Provides session-based memory for follow-up query resolution
+# agentic/index_rag/index_rag_memory.py
+# =============================================================================
+# INDEX RAG MEMORY - Conversation Memory for Product Index RAG
+# =============================================================================
+#
+# Refactored to use BaseRAGMemory base class.
+# Provides session-based memory for follow-up query resolution in index RAG.
+#
+# =============================================================================
 
 import logging
-import time
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from agentic.base_memory import BaseRAGMemory, create_memory_singleton
 
-from dotenv import load_dotenv
-
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class IndexRAGMemory:
+class IndexRAGMemory(BaseRAGMemory):
     """
     Conversation memory for Index RAG.
-    
-    Features:
-    - Store query history per session
-    - Resolve follow-up queries ("What about Emerson?")
-    - Cache query results
+
+    Extends BaseRAGMemory with index-specific functionality:
+    - Track product types, vendors, and models searched
+    - LLM-based follow-up resolution
+    - Result caching
+
+    Features inherited from BaseRAGMemory:
+    - Session-based storage with TTL
+    - Automatic cleanup of expired sessions
+    - Thread-safe operations
+    - History tracking with pruning
     """
-    
-    def __init__(self):
-        """Initialize conversation memory."""
-        # Session -> conversation history
-        self._conversation_memory: Dict[str, List[Dict[str, Any]]] = {}
-        
-        # Query hash -> result cache
-        self._result_cache: Dict[str, Dict[str, Any]] = {}
-        self._cache_max_size = 100
-        
-        # Session TTL (1 hour)
-        self._session_ttl_seconds = 3600
-        
-        logger.info("[IndexRAGMemory] Initialized")
-    
+
+    # Cache for query results
+    _result_cache: Dict[str, Dict[str, Any]] = {}
+    _cache_max_size: int = 100
+
+    def _get_context_keys(self) -> List[str]:
+        """Define context keys tracked by index memory."""
+        return ["product_types", "vendors", "models"]
+
     def add_to_memory(
-        self, 
-        session_id: str, 
-        query: str, 
+        self,
+        session_id: str,
+        query: str,
         intent: str = None,
         product_type: str = None,
         vendors: List[str] = None,
         models: List[str] = None
-    ):
+    ) -> None:
         """
         Add a conversation turn to memory.
-        
+
         Args:
             session_id: Session identifier
             query: User's query
@@ -60,116 +61,143 @@ class IndexRAGMemory:
             vendors: Detected vendors
             models: Detected models
         """
-        if session_id not in self._conversation_memory:
-            self._conversation_memory[session_id] = []
-        
-        turn = {
+        # Add history entry using base class method
+        self._add_history_entry(session_id, {
             "query": query,
             "intent": intent,
             "product_type": product_type,
             "vendors": vendors or [],
-            "models": models or [],
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        self._conversation_memory[session_id].append(turn)
-        
-        # Keep last 10 turns per session
-        if len(self._conversation_memory[session_id]) > 10:
-            self._conversation_memory[session_id] = self._conversation_memory[session_id][-10:]
-        
-        logger.debug(f"[IndexRAGMemory] Added turn for {session_id}: {len(self._conversation_memory[session_id])} turns")
-    
-    def get_history(self, session_id: str) -> List[Dict[str, Any]]:
-        """Get conversation history for a session."""
-        return self._conversation_memory.get(session_id, [])
-    
+            "models": models or []
+        })
+
+        # Update context
+        if product_type:
+            self._update_context(session_id, "product_types", [product_type])
+        if vendors:
+            self._update_context(session_id, "vendors", vendors)
+        if models:
+            self._update_context(session_id, "models", models)
+
+        logger.debug(f"[IndexRAGMemory] Added turn for {session_id}")
+
     def get_last_context(self, session_id: str) -> Dict[str, Any]:
-        """Get the last conversation context for a session."""
-        history = self.get_history(session_id)
-        if history:
-            return history[-1]
-        return {}
-    
-    def is_follow_up_query(self, query: str) -> bool:
         """
-        Check if query looks like a follow-up.
-        
-        Follow-up indicators:
-        - "What about X?"
-        - "How about X?"
-        - "And X?"
-        - Short queries (< 5 words)
-        - Pronouns referring to previous context
+        Get the last conversation context for follow-up resolution.
+
+        Returns:
+            Dictionary with last query data and accumulated context
         """
-        query_lower = query.lower().strip()
-        
-        # Explicit follow-up phrases
-        follow_up_indicators = [
-            "what about", "how about", "and for", "same for",
-            "what's the", "how's the", "tell me about",
-            "compare with", "versus", "vs", "and",
-            "what if", "how does", "show me"
-        ]
-        
-        if any(indicator in query_lower for indicator in follow_up_indicators):
-            return True
-        
-        # Very short queries are likely follow-ups
-        if len(query.split()) <= 4:
-            return True
-        
-        # Pronouns indicating reference to previous context
-        pronouns = ["it", "them", "those", "these", "that", "this"]
-        words = query_lower.split()
-        if words and words[0] in pronouns:
-            return True
-        
-        return False
-    
+        base_context = super().get_last_context(session_id)
+
+        if not base_context:
+            return {}
+
+        last_entry = base_context.get("last_entry", {})
+
+        return {
+            "query": last_entry.get("query", ""),
+            "product_type": last_entry.get("product_type", ""),
+            "vendors": last_entry.get("vendors", []),
+            "models": last_entry.get("models", []),
+            "intent": last_entry.get("intent", ""),
+            "all_product_types": base_context.get("product_types", []),
+            "all_vendors": base_context.get("vendors", []),
+            "all_models": base_context.get("models", [])
+        }
+
     def resolve_follow_up(self, session_id: str, query: str) -> str:
         """
         Resolve follow-up queries using conversation history.
-        
+
+        Uses LLM for intelligent resolution when simple patterns don't match.
+
         Example:
         - Previous: "Honeywell pressure transmitters"
         - Current: "What about Emerson?"
         - Resolved: "Emerson pressure transmitters"
-        
+
         Args:
             session_id: Session identifier
             query: User's current query
-            
+
         Returns:
             Resolved query (unchanged if not a follow-up)
         """
         # Check if this is a follow-up
         if not self.is_follow_up_query(query):
             return query
-        
+
         # Get previous context
         last_context = self.get_last_context(session_id)
         if not last_context:
             return query  # No history, can't resolve
-        
+
         last_query = last_context.get('query', '')
         last_product_type = last_context.get('product_type', '')
         last_vendors = last_context.get('vendors', [])
-        
+
         if not last_product_type and not last_vendors:
             return query  # No useful context
-        
-        # Use LLM to resolve the follow-up
+
+        # Try simple pattern-based resolution first
+        query_lower = query.lower().strip()
+
+        # Handle "What about [vendor]?" pattern
+        if query_lower.startswith("what about ") or query_lower.startswith("how about "):
+            prefix = "what about " if query_lower.startswith("what about ") else "how about "
+            new_subject = query[len(prefix):].strip().rstrip("?")
+
+            if last_product_type:
+                resolved = f"{new_subject} {last_product_type}"
+                logger.info(f"[IndexRAGMemory] Resolved follow-up: '{query}' -> '{resolved}'")
+                return resolved
+
+        # Use LLM for complex follow-up resolution
         try:
-            from llm_fallback import create_llm_with_fallback
-            
-            llm = create_llm_with_fallback(
-                model="gemini-2.5-flash",
-                temperature=0.1,
-                max_tokens=200
+            resolved = self._llm_resolve_follow_up(
+                query=query,
+                last_query=last_query,
+                product_type=last_product_type,
+                vendors=last_vendors
             )
-            
-            prompt = ChatPromptTemplate.from_template("""Resolve this follow-up question using the conversation context.
+            if resolved and resolved != query:
+                logger.info(f"[IndexRAGMemory] LLM resolved follow-up: '{query}' -> '{resolved}'")
+                return resolved
+        except Exception as e:
+            logger.warning(f"[IndexRAGMemory] LLM follow-up resolution failed: {e}")
+
+        return query
+
+    def _llm_resolve_follow_up(
+        self,
+        query: str,
+        last_query: str,
+        product_type: str,
+        vendors: List[str]
+    ) -> str:
+        """
+        Use LLM to resolve complex follow-up queries.
+
+        Args:
+            query: Current follow-up query
+            last_query: Previous query
+            product_type: Last product type discussed
+            vendors: Last vendors discussed
+
+        Returns:
+            Resolved query or original if resolution fails
+        """
+        from llm_fallback import create_llm_with_fallback
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
+
+        llm = create_llm_with_fallback(
+            model="gemini-2.5-flash",
+            temperature=0.1,
+            max_tokens=200
+        )
+
+        prompt = ChatPromptTemplate.from_template("""Resolve this follow-up question using the conversation context.
 
 PREVIOUS QUESTION: {last_query}
 PREVIOUS CONTEXT:
@@ -185,98 +213,94 @@ INSTRUCTIONS:
 - Return ONLY the resolved query text, nothing else
 
 RESOLVED QUERY:""")
-            
-            chain = prompt | llm | StrOutputParser()
-            
-            resolved = chain.invoke({
-                "last_query": last_query,
-                "product_type": last_product_type or "not specified",
-                "vendors": ", ".join(last_vendors) if last_vendors else "none",
-                "current_query": query
-            })
-            
-            resolved_query = resolved.strip()
-            
-            if resolved_query and resolved_query != query:
-                logger.info(f"[IndexRAGMemory] Resolved follow-up: '{query}' -> '{resolved_query}'")
-                return resolved_query
-            
-            return query
-            
-        except Exception as e:
-            logger.warning(f"[IndexRAGMemory] Follow-up resolution failed: {e}")
-            return query
-    
-    def clear_session(self, session_id: str):
-        """Clear conversation memory for a session."""
-        if session_id in self._conversation_memory:
-            del self._conversation_memory[session_id]
-            logger.info(f"[IndexRAGMemory] Cleared session: {session_id}")
-    
-    def cleanup_expired_sessions(self) -> int:
+
+        chain = prompt | llm | StrOutputParser()
+
+        resolved = chain.invoke({
+            "last_query": last_query,
+            "product_type": product_type or "not specified",
+            "vendors": ", ".join(vendors) if vendors else "none",
+            "current_query": query
+        })
+
+        return resolved.strip()
+
+    # =========================================================================
+    # RESULT CACHING
+    # =========================================================================
+
+    def cache_result(self, query_hash: str, result: Dict[str, Any]) -> None:
         """
-        Remove expired sessions.
-        
-        Returns:
-            Number of sessions removed
+        Cache a query result.
+
+        Args:
+            query_hash: Hash of the query
+            result: Result to cache
         """
-        now = time.time()
-        expired = []
-        
-        for session_id, history in self._conversation_memory.items():
-            if history:
-                # Check last turn timestamp
-                last_turn = history[-1]
-                last_time_str = last_turn.get('timestamp', '')
-                if last_time_str:
-                    try:
-                        last_dt = datetime.fromisoformat(last_time_str)
-                        age_seconds = (datetime.utcnow() - last_dt).total_seconds()
-                        if age_seconds > self._session_ttl_seconds:
-                            expired.append(session_id)
-                    except Exception:
-                        pass
-        
-        for session_id in expired:
-            del self._conversation_memory[session_id]
-        
-        if expired:
-            logger.info(f"[IndexRAGMemory] Cleaned up {len(expired)} expired sessions")
-        
-        return len(expired)
-    
-    def cache_result(self, query_hash: str, result: Dict[str, Any]):
-        """Cache a query result."""
         if len(self._result_cache) >= self._cache_max_size:
             # Remove oldest entry
             oldest = next(iter(self._result_cache))
             del self._result_cache[oldest]
-        
+
         self._result_cache[query_hash] = {
             "result": result,
             "timestamp": datetime.utcnow().isoformat()
         }
-    
+
     def get_cached_result(self, query_hash: str) -> Optional[Dict[str, Any]]:
-        """Get a cached result if available."""
+        """
+        Get a cached result if available.
+
+        Args:
+            query_hash: Hash of the query
+
+        Returns:
+            Cached result or None
+        """
         cached = self._result_cache.get(query_hash)
         if cached:
             return cached.get("result")
         return None
 
+    def clear_cache(self) -> int:
+        """
+        Clear the result cache.
 
-# Global instance
-index_rag_memory = IndexRAGMemory()
+        Returns:
+            Number of entries cleared
+        """
+        count = len(self._result_cache)
+        self._result_cache.clear()
+        return count
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+
+_singleton_holder: Dict[str, Any] = {}
 
 
 def get_index_rag_memory() -> IndexRAGMemory:
-    """Get the global IndexRAGMemory instance."""
-    return index_rag_memory
+    """Get the global IndexRAGMemory singleton instance."""
+    return create_memory_singleton(
+        IndexRAGMemory,
+        _singleton_holder,
+        session_timeout=3600  # 1 hour
+    )
 
+
+# Global instance for backward compatibility
+index_rag_memory = get_index_rag_memory()
+
+
+# =============================================================================
+# CONVENIENCE FUNCTIONS
+# =============================================================================
 
 def resolve_follow_up_query(session_id: str, query: str) -> str:
     """Convenience function for follow-up resolution."""
-    return index_rag_memory.resolve_follow_up(session_id, query)
+    return get_index_rag_memory().resolve_follow_up(session_id, query)
 
 
 def add_to_conversation_memory(
@@ -286,9 +310,9 @@ def add_to_conversation_memory(
     product_type: str = None,
     vendors: List[str] = None,
     models: List[str] = None
-):
+) -> None:
     """Convenience function for adding to memory."""
-    index_rag_memory.add_to_memory(
+    get_index_rag_memory().add_to_memory(
         session_id=session_id,
         query=query,
         intent=intent,
@@ -298,14 +322,41 @@ def add_to_conversation_memory(
     )
 
 
-def clear_conversation_memory(session_id: str):
+def clear_conversation_memory(session_id: str) -> None:
     """Convenience function for clearing memory."""
-    index_rag_memory.clear_session(session_id)
+    get_index_rag_memory().clear_session(session_id)
 
 
-# ============================================================================
+def get_session_summary(session_id: str) -> Dict[str, Any]:
+    """Get summary of a session."""
+    memory = get_index_rag_memory()
+    info = memory.get_session_info(session_id)
+    if not info:
+        return {"exists": False}
+
+    context = memory.get_last_context(session_id)
+    return {
+        "exists": True,
+        **info,
+        "product_types": context.get("all_product_types", []),
+        "vendors": context.get("all_vendors", []),
+        "models": context.get("all_models", [])
+    }
+
+
+def clear_session(session_id: str) -> bool:
+    """Clear a specific session."""
+    return get_index_rag_memory().clear_session(session_id)
+
+
+def cleanup_expired_sessions() -> int:
+    """Clean up expired sessions."""
+    return get_index_rag_memory().cleanup_expired_sessions()
+
+
+# =============================================================================
 # EXPORTS
-# ============================================================================
+# =============================================================================
 
 __all__ = [
     'IndexRAGMemory',
@@ -313,5 +364,8 @@ __all__ = [
     'get_index_rag_memory',
     'resolve_follow_up_query',
     'add_to_conversation_memory',
-    'clear_conversation_memory'
+    'clear_conversation_memory',
+    'get_session_summary',
+    'clear_session',
+    'cleanup_expired_sessions'
 ]

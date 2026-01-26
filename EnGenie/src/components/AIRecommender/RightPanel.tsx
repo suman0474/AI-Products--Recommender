@@ -480,9 +480,63 @@ const RightPanel: React.FC<RightPanelProps> = ({
     finalAnalysisResult?.vendorAnalysis?.vendorMatches?.length ||
     finalAnalysisResult?.overallRanking?.rankedProducts?.length
   );
-  const showIdentifiedItems = !hasAnalysisData && identifiedItems && identifiedItems.length > 0;
+  // Show identified items if they exist, regardless of analysis data (will be handled via tabs if both exist)
+  const showIdentifiedItems = identifiedItems && identifiedItems.length > 0;
   // Reuse hasAnalysisData for showAnalysis
   const showAnalysis = hasAnalysisData;
+
+  const renderIdentifiedItemsList = () => (
+    <div className="space-y-4 max-w-3xl mx-auto pt-2">
+      {identifiedItems?.map((item) => (
+        <Card key={item.number} className="overflow-hidden border-border/50 shadow-sm hover:shadow-md transition-all">
+          <CardContent className="p-0 flex flex-col md:flex-row gap-4">
+            {/* Image Section */}
+            <div className="w-full md:w-48 h-48 bg-muted/30 flex-shrink-0 relative group">
+              {item.imageUrl ? (
+                <img src={getAbsoluteImageUrl(item.imageUrl)} alt={item.name} className="w-full h-full object-contain p-2" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                  <Trophy className="w-12 h-12 opacity-20" />
+                </div>
+              )}
+              <div className="absolute top-2 left-2 bg-background/90 backdrop-blur px-2 py-1 rounded text-xs font-mono font-medium border shadow-sm">
+                #{item.number}
+              </div>
+              <div className="absolute top-2 right-2 bg-primary/10 text-primary-foreground px-2 py-1 rounded text-xs font-medium border border-primary/20 shadow-sm">
+                {item.type}
+              </div>
+            </div>
+
+            {/* Content Section */}
+            <div className="flex-1 p-4 flex flex-col">
+              <div className="flex-1">
+                <h3 className="text-xl font-bold mb-1 text-primary">{item.name}</h3>
+                <div className="text-sm text-muted-foreground mb-3 font-medium bg-muted/30 inline-block px-2 py-1 rounded">
+                  {item.category}
+                </div>
+
+                {item.keySpecs && (
+                  <div className="mt-2 text-sm text-foreground/80 leading-relaxed">
+                    <strong>Specs:</strong> {item.keySpecs}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-3">
+                <Button
+                  onClick={() => onRunSearch && item.sampleInput && onRunSearch(item.sampleInput)}
+                  className="gap-2 shadow-lg hover:shadow-xl transition-all hover:scale-105 active:scale-95 font-semibold"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  Run Product Search
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 
   // DEBUG: Log render decisions
   console.log('[RightPanel] Render decision:', {
@@ -516,8 +570,8 @@ const RightPanel: React.FC<RightPanelProps> = ({
     );
   }
 
-  // Helper for Identified Items rendering
-  if (showIdentifiedItems && !isDocked) {
+  // Helper for Identified Items rendering (Standalone Mode: ONLY when no analysis data)
+  if (showIdentifiedItems && !showAnalysis && !isDocked) {
     return (
       <div className="w-full h-full flex flex-col glass-sidebar text-foreground border-l border-border sticky top-0 right-0 z-20" style={{ minWidth: 0 }}>
         {/* Header */}
@@ -530,56 +584,7 @@ const RightPanel: React.FC<RightPanelProps> = ({
         </div>
 
         <ScrollArea className="flex-1 p-4">
-          <div className="space-y-4 max-w-3xl mx-auto pt-2">
-            {identifiedItems!.map((item) => (
-              <Card key={item.number} className="overflow-hidden border-border/50 shadow-sm hover:shadow-md transition-all">
-                <CardContent className="p-0 flex flex-col md:flex-row gap-4">
-                  {/* Image Section */}
-                  <div className="w-full md:w-48 h-48 bg-muted/30 flex-shrink-0 relative group">
-                    {item.imageUrl ? (
-                      <img src={getAbsoluteImageUrl(item.imageUrl)} alt={item.name} className="w-full h-full object-contain p-2" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                        <Trophy className="w-12 h-12 opacity-20" />
-                      </div>
-                    )}
-                    <div className="absolute top-2 left-2 bg-background/90 backdrop-blur px-2 py-1 rounded text-xs font-mono font-medium border shadow-sm">
-                      #{item.number}
-                    </div>
-                    <div className="absolute top-2 right-2 bg-primary/10 text-primary-foreground px-2 py-1 rounded text-xs font-medium border border-primary/20 shadow-sm">
-                      {item.type}
-                    </div>
-                  </div>
-
-                  {/* Content Section */}
-                  <div className="flex-1 p-4 flex flex-col">
-                    <div className="flex-1">
-                      <h3 className="text-xl font-bold mb-1 text-primary">{item.name}</h3>
-                      <div className="text-sm text-muted-foreground mb-3 font-medium bg-muted/30 inline-block px-2 py-1 rounded">
-                        {item.category}
-                      </div>
-
-                      {item.keySpecs && (
-                        <div className="mt-2 text-sm text-foreground/80 leading-relaxed">
-                          <strong>Specs:</strong> {item.keySpecs}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mt-4 flex items-center justify-end gap-3">
-                      <Button
-                        onClick={() => onRunSearch && item.sampleInput && onRunSearch(item.sampleInput)}
-                        className="gap-2 shadow-lg hover:shadow-xl transition-all hover:scale-105 active:scale-95 font-semibold"
-                      >
-                        <Play className="w-4 h-4 fill-current" />
-                        Run Product Search
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          {renderIdentifiedItemsList()}
         </ScrollArea>
       </div>
     )
@@ -742,6 +747,11 @@ const RightPanel: React.FC<RightPanelProps> = ({
                   <TabsTrigger value="ranking" className="flex-shrink-0 px-4 py-2 rounded-lg transition-all bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:scale-125 hover:bg-transparent whitespace-nowrap flex items-center justify-center">
                     <Trophy className="h-5 w-5 text-slate-700 dark:text-slate-200" />
                   </TabsTrigger>
+                  {showIdentifiedItems && (
+                    <TabsTrigger value="identified-items" className="flex-shrink-0 px-4 py-2 rounded-lg transition-all bg-transparent data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:scale-125 hover:bg-transparent whitespace-nowrap flex items-center justify-center font-semibold text-primary">
+                      Items ({identifiedItems?.length})
+                    </TabsTrigger>
+                  )}
                   {vendorNames.map((vendorName) => (
                     <TabsTrigger
                       key={vendorName}
@@ -772,6 +782,13 @@ const RightPanel: React.FC<RightPanelProps> = ({
                 </TabsList>
                 <ScrollBar orientation="horizontal" className="h-1.5" />
               </ScrollArea>
+
+              {/* Identified Items Tab */}
+              {showIdentifiedItems && (
+                <TabsContent value="identified-items" className="mt-4 min-w-0">
+                  {renderIdentifiedItemsList()}
+                </TabsContent>
+              )}
 
               {/* Best Match Tab */}
               <TabsContent value="ranking" className="mt-4 min-w-0">

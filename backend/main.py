@@ -795,11 +795,12 @@ def serve_image(file_id):
         container_client = azure_blob_manager.container_client
         base_path = azure_blob_manager.base_path
         
-        # Search paths: files (UUIDs), images (cached), generic_images (generated)
+        # Search paths: files (UUIDs), images (cached), generic_images (generated), vendor_images (cached)
         search_paths = [
             f"{base_path}/files",
             f"{base_path}/images",
-            f"{base_path}/generic_images"
+            f"{base_path}/generic_images",
+            f"{base_path}/vendor_images"
         ]
         
         # Search for the blob with matching file_id
@@ -837,15 +838,29 @@ def serve_image(file_id):
                     )
                     
                     for blob in blobs:
-                        # Check if file_id is in the blob name (UUID match or simple filename match)
-                        # Note: We check if the passed file_id is contained in the blob name
-                        # This handles UUIDs "uuid_filename.png" and simple names "vendor_model.jpg"
-                        if file_id in blob.name:
+                        # Improved matching logic:
+                        # 1. Exact match (normalized)
+                        # 2. Ends with file_id (handles "generic_images/foo.png" matching "foo.png")
+                        # 3. UUID match
+                        
+                        blob_name_lower = blob.name.lower()
+                        file_id_lower = file_id.lower()
+                        
+                        # Check strict endings (most reliable for filenames)
+                        if blob_name_lower.endswith(f"/{file_id_lower}") or blob_name_lower == file_id_lower:
                             image_blob = blob
                             blob_name = blob.name
                             if blob.content_settings and blob.content_settings.content_type:
                                 content_type = blob.content_settings.content_type
                             break
+                        
+                        # Fallback: lenient substring match for UUIDs (only if not a path-like file_id)
+                        if '/' not in file_id and file_id in blob.name:
+                             image_blob = blob
+                             blob_name = blob.name
+                             if blob.content_settings and blob.content_settings.content_type:
+                                 content_type = blob.content_settings.content_type
+                             break
                         
                         # Also check metadata for file_id
                         if blob.metadata and blob.metadata.get('file_id') == file_id:
@@ -859,7 +874,14 @@ def serve_image(file_id):
                 logging.warning(f"Error searching for image blob {file_id}: {e}")
         
         if blob_name is None:
-            logging.error(f"Image not found in Azure Blob Storage: {file_id}")
+            # Fallback: Check local filesystem
+            # This handles cases where images are saved locally due to Azure failure
+            local_path = os.path.join(app.root_path, 'static', 'images', file_id)
+            if os.path.exists(local_path):
+                logging.info(f"[SERVE_IMAGE] Serving from local fallback: {local_path}")
+                return send_file(local_path)
+            
+            logging.error(f"Image not found in Azure Blob Storage or local fallback: {file_id}")
             return jsonify({"error": "Image not found"}), 404
         
         # Download the blob content
@@ -908,9 +930,19 @@ def serve_image_root(file_id):
     # Also handle old formats: hash (64 chars) or ObjectId (24 chars)
     if len(file_id) in [24, 64] and all(c in '0123456789abcdefABCDEF' for c in file_id):
         return serve_image(file_id)
-    
-    # Otherwise let it 404 (or be handled by frontend router if applicable)
+
     return jsonify({"error": "Not found"}), 404
+
+# =============================================================================
+# IMAGE SERVING - LOCAL FALLBACK
+# =============================================================================
+@app.route('/api/images/generic/<path:filename>')
+def serve_generic_images(filename):
+    """Serve generic images from local storage (fallback for Azure)."""
+    full_path = os.path.join(app.root_path, 'static', 'images', 'generic_images', filename)
+    if not os.path.exists(full_path):
+        return jsonify({"error": "Image not found", "path": full_path}), 404
+    return send_file(full_path)
 
 @app.route('/api/generic_image/<product_type>', methods=['GET'])
 @login_required
@@ -4124,7 +4156,8 @@ def login():
 
     user = User.query.filter_by(username=username).first()
     if user and check_password(user.password_hash, password):
-        if user.status != 'active':
+        # Allow both 'active' and 'approved' statuses
+        if user.status not in ['active', 'approved']:
             return jsonify({"error": f"Account not active. Current status: {user.status}."}), 403
         
         # Ensure new login creates a fresh agentic workflow session

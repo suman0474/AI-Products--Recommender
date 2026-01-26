@@ -417,7 +417,8 @@ class DeepAgenticWorkflowOrchestrator:
             state = self._get_or_create_state(
                 user_input=user_input,
                 session_id=session_id,
-                thread_id=thread_id
+                thread_id=thread_id,
+                decision=user_decision
             )
 
             if not state:
@@ -879,7 +880,8 @@ class DeepAgenticWorkflowOrchestrator:
     def _get_or_create_state(self,
                              user_input: Optional[str],
                              session_id: Optional[str],
-                             thread_id: Optional[str]) -> Optional[WorkflowState]:
+                             thread_id: Optional[str],
+                             decision: Optional[str] = None) -> Optional[WorkflowState]:
         """Get existing state or create new one."""
         # Try to find existing state
         state = self.session_manager.get_state(thread_id=thread_id, session_id=session_id)
@@ -890,8 +892,14 @@ class DeepAgenticWorkflowOrchestrator:
 
         # Need to create new state
         if not user_input:
-            logger.error("[DEEP_WORKFLOW] Cannot create session without user_input")
-            return None
+            # FIX: If we have a decision but no input (e.g. backend restart + button click),
+            # synthesize input to prevent crash
+            if decision:
+                user_input = f"User selected: {decision}"
+                logger.warning(f"[DEEP_WORKFLOW] Creating session from decision '{decision}' (input was empty)")
+            else:
+                logger.error("[DEEP_WORKFLOW] Cannot create session without user_input or decision")
+                return None
 
         state = self.session_manager.create_session(user_input, session_id)
         logger.info(f"[DEEP_WORKFLOW] Created new session: {state.thread_id}")

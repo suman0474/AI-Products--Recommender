@@ -163,30 +163,24 @@ def _generate_image_with_llm(product_type: str, retry_count: int = 0, max_retrie
         # Check if it's a rate limit error (429)
         if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
             if retry_count < max_retries:
-                # FIX #3: Extract retry delay from error message if available
-                retry_delay = 60  # Default to 60 seconds
-                if 'retry in' in error_str.lower():
-                    try:
-                        import re
-                        match = re.search(r'retry in (\d+(?:\.\d+)?)', error_str.lower())
-                        if match:
-                            retry_delay = float(match.group(1))
-                    except:
-                        pass
-
-                # FIX #3: More aggressive exponential backoff with jitter
-                # Exponential: 60s -> 120s -> 240s, capped at 5 minutes
-                base_wait = retry_delay * (2 ** retry_count)
-                jitter = time.time() % 1.0  # Add 0-1s jitter
-                wait_time = min(base_wait + jitter, 300)  # Cap at 5 minutes
-
+                # FIX3: Retry logic for 429 errors
+                # The original max_retries is passed as an argument, use that.
+                # The original retry_count is passed as an argument, use that.
+                retry_delay = 2  # Start with 2 seconds
+                
+                # Calculate wait time based on current retry_count
+                wait_time = retry_delay * (2 ** retry_count)  # 2s, 4s, 8s
+                import random
+                jitter = random.uniform(0.1, 1.0)
+                total_wait = wait_time + jitter
+                
                 logger.warning(
                     f"[FIX3] Rate limit hit for '{product_type}'. "
-                    f"Retry {retry_count + 1}/{max_retries} after {wait_time:.1f}s "
-                    f"(base: {base_wait:.1f}s, jitter: {jitter:.1f}s)..."
+                    f"Retry {retry_count + 1}/{max_retries} after {total_wait:.1f}s "
+                    f"(base: {wait_time:.1f}s, jitter: {jitter:.1f}s)..."
                 )
-                time.sleep(wait_time)
-
+                time.sleep(total_wait)
+                
                 # Retry the request
                 return _generate_image_with_llm(product_type, retry_count + 1, max_retries)
             else:
@@ -319,6 +313,12 @@ def get_generic_image_from_azure(product_type: str) -> Optional[Dict[str, Any]]:
         # Construct metadata path (relative to base path)
         metadata_path = f"{Collections.GENERIC_IMAGES}/{normalized_type}.json"
 
+        # Check if azure_blob_manager is available
+        if not azure_blob_manager.is_available:
+             # logger.warning(f"[AZURE_CHECK] Azure Blob Manager is not initialized. Skipping Azure check for {product_type}")
+             # Fail silently to catch block which triggers local fallback
+             raise Exception("Azure Blob Manager not initialized or available")
+
         # Try to get metadata from Azure Blob
         blob_client = azure_blob_manager.get_blob_client(metadata_path)
         metadata_bytes = blob_client.download_blob().readall()
@@ -340,10 +340,44 @@ def get_generic_image_from_azure(product_type: str) -> Optional[Dict[str, Any]]:
 
     except ResourceNotFoundError:
         logger.info(f"[AZURE_CHECK] No cached generic image in Azure Blob for: {product_type} (normalized: {normalized_type})")
-        return None
+        # Try local fallback here if not found in Azure
+        return _get_local_generic_image(product_type, normalized_type)
+        
     except Exception as e:
         logger.warning(f"[AZURE_CHECK] Failed to retrieve generic image from Azure Blob for '{product_type}': {e}")
-        return None
+        # Try local fallback on error
+        return _get_local_generic_image(product_type, normalized_type)
+
+
+def _get_local_generic_image(product_type: str, normalized_type: str = None) -> Optional[Dict[str, Any]]:
+    """Helper to check local disk for generic images."""
+    try:
+        import json
+        if not normalized_type:
+             normalized_type = product_type.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+             
+        local_dir = os.path.join(os.getcwd(), 'static', 'images', 'generic_images')
+        metadata_path = os.path.join(local_dir, f"{normalized_type}.json")
+        
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            logger.info(f"[LOCAL_CHECK] ✓ Found cached generic image locally for: {product_type}")
+            return {
+                'azure_blob_path': f"{normalized_type}.png", # Simplified path for local
+                'product_type': metadata.get('product_type'),
+                'source': metadata.get('source'),
+                'content_type': metadata.get('content_type', 'image/png'),
+                'file_size': metadata.get('file_size', 0),
+                'generation_method': metadata.get('generation_method', 'llm'),
+                'cached': True,
+                'storage_location': 'local'
+            }
+    except Exception as e:
+        logger.warning(f"[LOCAL_CHECK] Failed local lookup for {product_type}: {e}")
+    
+    return None
 
 
 def cache_generic_image_to_azure(product_type: str, image_data: Dict[str, Any]) -> bool:
@@ -364,6 +398,14 @@ def cache_generic_image_to_azure(product_type: str, image_data: Dict[str, Any]) 
 
         logger.info(f"[CACHE_AZURE] Caching generic image to Azure Blob for: {product_type}")
 
+        # FIX: Check if Azure Blob Storage is available before attempting upload
+        if azure_blob_manager is None:
+            logger.warning(
+                f"[CACHE_AZURE] Azure Blob Storage not configured - "
+                f"falling back to LOCAL storage for {product_type}"
+            )
+            return _cache_generic_image_locally(product_type, image_data)
+
         # Get image bytes
         image_bytes = image_data.get('image_bytes')
         if not image_bytes:
@@ -381,6 +423,15 @@ def cache_generic_image_to_azure(product_type: str, image_data: Dict[str, Any]) 
 
         # Upload image blob
         image_blob_path = f"{Collections.GENERIC_IMAGES}/{normalized_type}.{file_extension}"
+
+        # FIX: Additional safety check before calling get_blob_client
+        if not hasattr(azure_blob_manager, 'get_blob_client'):
+            logger.warning(
+                f"[CACHE_AZURE] Azure Blob Manager missing get_blob_client method - "
+                f"skipping cache for {product_type}"
+            )
+            return False
+
         image_blob_client = azure_blob_manager.get_blob_client(image_blob_path)
         image_blob_client.upload_blob(
             image_bytes,
@@ -411,24 +462,77 @@ def cache_generic_image_to_azure(product_type: str, image_data: Dict[str, Any]) 
         metadata_blob_path = f"{Collections.GENERIC_IMAGES}/{normalized_type}.json"
         metadata_json = json.dumps(metadata_doc, indent=2)
 
-        metadata_blob_client = azure_blob_manager.get_blob_client(metadata_blob_path)
-        metadata_blob_client.upload_blob(
-            metadata_json,
-            overwrite=True,
-            content_settings=ContentSettings(content_type='application/json'),
-            metadata={
-                'product_type': product_type,
-                'normalized_type': normalized_type,
-                'metadata_file': 'true'
-            }
-        )
+        try:
+            # FIX: Wrap metadata upload in try-except to handle Azure client errors
+            metadata_blob_client = azure_blob_manager.get_blob_client(metadata_blob_path)
+            metadata_blob_client.upload_blob(
+                metadata_json,
+                overwrite=True,
+                content_settings=ContentSettings(content_type='application/json'),
+                metadata={
+                    'product_type': product_type,
+                    'normalized_type': normalized_type,
+                    'metadata_file': 'true'
+                }
+            )
+            logger.info(f"[CACHE_AZURE] ✓ Stored metadata in Azure Blob: {metadata_blob_path}")
+        except Exception as metadata_error:
+            logger.warning(
+                f"[CACHE_AZURE] Failed to store metadata for {product_type}: {metadata_error} "
+                f"(image is still cached)"
+            )
+            # Return True anyway since image was cached successfully
 
-        logger.info(f"[CACHE_AZURE] ✓ Stored metadata in Azure Blob: {metadata_blob_path}")
         return True
 
     except Exception as e:
         logger.error(f"[CACHE_AZURE] Failed to cache generic image to Azure Blob: {e}")
         logger.exception(e)
+        logger.info(f"[CACHE_AZURE] Attempting local fallback due to Azure failure...")
+        return _cache_generic_image_locally(product_type, image_data)
+
+
+def _cache_generic_image_locally(product_type: str, image_data: Dict[str, Any]) -> bool:
+    """Cache image to local disk (fallback)."""
+    try:
+        import json
+        
+        # Ensure directory exists
+        local_dir = os.path.join(os.getcwd(), 'static', 'images', 'generic_images')
+        os.makedirs(local_dir, exist_ok=True)
+        
+        image_bytes = image_data.get('image_bytes')
+        if not image_bytes:
+            return False
+
+        normalized_type = product_type.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+        
+        # Save Image
+        image_path = os.path.join(local_dir, f"{normalized_type}.png")
+        with open(image_path, 'wb') as f:
+            f.write(image_bytes)
+            
+        # Save Metadata
+        metadata = {
+            'product_type': product_type,
+            'product_type_normalized': normalized_type,
+            'image_filename': f"{normalized_type}.png",
+            'source': image_data.get('source', 'gemini_imagen'),
+            'content_type': 'image/png',
+            'file_size': len(image_bytes),
+            'generation_method': 'llm',
+            'generation_prompt': image_data.get('prompt', ''),
+            'created_at': datetime.utcnow().isoformat()
+        }
+        
+        with open(os.path.join(local_dir, f"{normalized_type}.json"), 'w') as f:
+            json.dump(metadata, f, indent=2)
+            
+        logger.info(f"[CACHE_LOCAL] ✓ Saved to local disk: {image_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"[CACHE_LOCAL] Failed to save locally: {e}")
         return False
 
 
@@ -476,7 +580,7 @@ def fetch_generic_images_batch(product_types: list, max_parallel_cache_checks: i
             # Check exact match first
             azure_image = get_generic_image_from_azure(product_type)
             if azure_image:
-                backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+                backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
                 return (product_type, {
                     'url': backend_url,
                     'product_type': product_type,
@@ -609,7 +713,7 @@ def _try_fallback_cache_lookup(product_type: str) -> Optional[Dict[str, Any]]:
         azure_image = get_generic_image_from_azure(fallback)
         if azure_image:
             logger.info(f"[BATCH_IMAGE] ✓ Fallback cache hit: '{fallback}' for '{product_type}'")
-            backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+            backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
             return {
                 'url': backend_url,
                 'product_type': product_type,
@@ -647,7 +751,7 @@ def _try_fallback_cache_lookup(product_type: str) -> Optional[Dict[str, Any]]:
                     azure_image = get_generic_image_from_azure(generic_type)
                     if azure_image:
                         logger.info(f"[BATCH_IMAGE] ✓ Category fallback: '{generic_type}' for '{product_type}'")
-                        backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+                        backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
                         return {
                             'url': backend_url,
                             'product_type': product_type,
@@ -686,8 +790,16 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
     # Step 1: Check Azure Blob Storage for cached image (exact match)
     azure_image = get_generic_image_from_azure(product_type)
     if azure_image:
-        logger.info(f"[FETCH] ✓ Using cached generic image from Azure Blob for '{product_type}'")
-        backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+        logger.info(f"[FETCH] ✓ Using cached generic image from {azure_image.get('storage_location', 'Azure')} for '{product_type}'")
+        
+        # Determine URL based on storage location
+        if azure_image.get('storage_location') == 'local':
+            # Local URL
+            filename = os.path.basename(azure_image.get('azure_blob_path', ''))
+            backend_url = f"images/generic/{filename}"
+        else:
+            # Azure URL (proxied via existing logic if needed, but here we stay consistent)
+            backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
 
         return {
             'url': backend_url,
@@ -759,7 +871,7 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
         azure_image = get_generic_image_from_azure(fallback)
         if azure_image:
             logger.info(f"[FETCH] ✓ Using cached generic image from Azure Blob for '{fallback}' (fallback from '{product_type}')")
-            backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+            backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
 
             return {
                 'url': backend_url,
@@ -822,7 +934,7 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
             azure_image = get_generic_image_from_azure(category_fallback)
             if azure_image:
                 logger.info(f"[FETCH] ✓ Category fallback found: '{category_fallback}' for '{product_type}'")
-                backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+                backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
 
                 return {
                     'url': backend_url,
@@ -886,7 +998,7 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
                 # Retrieve the cached image to get the URL
                 azure_image = get_generic_image_from_azure(product_type)
                 if azure_image:
-                    backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
+                    backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
 
                     # Notify waiting requests
                     with _pending_lock:
@@ -977,7 +1089,7 @@ def fetch_generic_product_image_fast(product_type: str) -> Dict[str, Any]:
         logger.info(f"[FETCH_FAST] ✓ Cache hit for '{product_type}'")
         return {
             'success': True,
-            'url': f"/api/images/{azure_image.get('azure_blob_path', '')}",
+            'url': f"images/{azure_image.get('azure_blob_path', '')}",
             'product_type': product_type,
             'source': 'cache',
             'use_placeholder': False,
@@ -1008,7 +1120,7 @@ def fetch_generic_product_image_fast(product_type: str) -> Dict[str, Any]:
                 logger.info(f"[FETCH_FAST] ✓ Generated and cached image for '{product_type}'")
                 return {
                     'success': True,
-                    'url': f"/api/images/{azure_image.get('azure_blob_path', '')}",
+                    'url': f"images/{azure_image.get('azure_blob_path', '')}",
                     'product_type': product_type,
                     'source': 'gemini_imagen',
                     'use_placeholder': False,

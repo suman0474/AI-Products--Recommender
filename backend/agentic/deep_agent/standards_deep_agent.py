@@ -1559,12 +1559,15 @@ def run_standards_deep_agent_batch(
         synth_parser = JsonOutputParser()
         synth_chain = synth_prompt | llm | synth_parser
         
-        synth_result = synth_chain.invoke({
-            "items_list": json.dumps(items_list, indent=2),
-            "worker_results": json.dumps(all_worker_results, indent=2)[:50000]  # Limit context
-        })
-        
-        items_final_specs = synth_result.get("items_final_specs", [])
+        if not all_worker_results:
+            logger.warning("[BATCH] Skipping synthesis - no worker results (no documents found)")
+            items_final_specs = []
+        else:
+            synth_result = synth_chain.invoke({
+                "items_list": json.dumps(items_list, indent=2),
+                "worker_results": json.dumps(all_worker_results, indent=2)[:50000]  # Limit context
+            })
+            items_final_specs = synth_result.get("items_final_specs", [])
         
         # ============================================
         # STEP 4: MERGE RESULTS BACK INTO ITEMS

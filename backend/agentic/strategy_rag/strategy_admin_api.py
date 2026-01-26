@@ -12,6 +12,9 @@ import logging
 from flask import Blueprint, request, jsonify
 from typing import Dict, Any
 
+# Import consolidated utilities
+from agentic.api_utils import api_response
+
 logger = logging.getLogger(__name__)
 
 # Create Blueprint
@@ -19,17 +22,8 @@ strategy_admin_bp = Blueprint('strategy_admin', __name__, url_prefix='/api/strat
 
 
 # =============================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (api_response imported from agentic.api_utils)
 # =============================================================================
-
-def api_response(success: bool, data: Any = None, error: str = None, status_code: int = 200):
-    """Standard API response format."""
-    response = {
-        "success": success,
-        "data": data,
-        "error": error
-    }
-    return jsonify(response), status_code
 
 
 # =============================================================================

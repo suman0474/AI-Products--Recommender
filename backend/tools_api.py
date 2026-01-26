@@ -12,7 +12,10 @@ import json
 import logging
 from typing import Dict, Any
 from flask import Blueprint, request, jsonify, session
-from functools import wraps
+
+# Import consolidated decorators and utilities
+from agentic.auth_decorators import login_required
+from agentic.api_utils import api_response, handle_errors
 
 logger = logging.getLogger(__name__)
 
@@ -21,43 +24,11 @@ tools_bp = Blueprint('tools', __name__, url_prefix='/api/tools')
 
 
 # =============================================================================
-# AUTHENTICATION DECORATOR
+# AUTHENTICATION & HELPER FUNCTIONS
 # =============================================================================
-
-def login_required(func):
-    """Require user to be logged in."""
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({"error": "Unauthorized: Please log in"}), 401
-        return func(*args, **kwargs)
-    return decorated_function
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def api_response(success: bool, data: Any = None, error: str = None, status_code: int = 200):
-    """Create standardized API response."""
-    response = {
-        "success": success,
-        "data": data,
-        "error": error
-    }
-    return jsonify(response), status_code
-
-
-def handle_errors(f):
-    """Decorator for error handling."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"Tool API Error: {e}", exc_info=True)
-            return api_response(False, error=str(e), status_code=500)
-    return decorated_function
+# Note: login_required, api_response, and handle_errors are now imported
+# from consolidated modules (agentic.auth_decorators and agentic.api_utils)
+# for consistency across all API endpoints.
 
 
 # =============================================================================

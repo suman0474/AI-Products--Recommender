@@ -72,13 +72,13 @@ class LLMWithTimeout:
     Uses threading for cross-platform compatibility (Windows-safe)
     """
 
-    def __init__(self, base_llm: Any, timeout_seconds: int = 150):
+    def __init__(self, base_llm: Any, timeout_seconds: int = 60):
         """
         Initialize LLM with timeout wrapper
 
         Args:
             base_llm: The underlying LLM instance
-            timeout_seconds: Maximum seconds to wait for LLM response (default: 30)
+            timeout_seconds: Maximum seconds to wait for LLM response (default: 60)
         """
         self.base_llm = base_llm
         self.timeout_seconds = timeout_seconds

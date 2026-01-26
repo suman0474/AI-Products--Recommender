@@ -3,9 +3,10 @@ import { ReactNode } from "react";
 interface MainHeaderProps {
     children?: ReactNode;
     rightContent?: ReactNode;
+    centerContent?: ReactNode;
 }
 
-export const MainHeader = ({ children, rightContent }: MainHeaderProps) => {
+export const MainHeader = ({ children, rightContent, centerContent }: MainHeaderProps) => {
     return (
         <header className="glass-header px-6 py-4 fixed top-0 w-full z-50">
             <div className="flex items-center justify-between">
@@ -38,9 +39,18 @@ export const MainHeader = ({ children, rightContent }: MainHeaderProps) => {
                 </div>
 
                 {/* Right side - Actions */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 relative z-50">
                     {rightContent}
                 </div>
+
+                {/* Centered Content */}
+                {centerContent && (
+                    <div className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+                        <div className="pointer-events-auto">
+                            {centerContent}
+                        </div>
+                    </div>
+                )}
             </div>
         </header>
     );

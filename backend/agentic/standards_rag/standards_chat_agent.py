@@ -20,6 +20,14 @@ from agentic.vector_store import get_vector_store
 from llm_fallback import create_llm_with_fallback
 from prompts_library import load_prompt_sections
 
+# Import consolidated JSON utilities
+from utils.json_utils import (
+    extract_json_from_response,
+    sanitize_json_string,
+    ensure_string,
+    ensure_float
+)
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -66,124 +74,13 @@ class StandardsRAGResponse(BaseModel):
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+# Note: extract_json_from_response and sanitize_json_string are now imported
+# from utils.json_utils module for consistency across all RAG agents.
 
-def extract_json_from_response(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Extract JSON from LLM response, handling various formats.
-
-    Handles:
-    - Pure JSON responses
-    - JSON wrapped in markdown code blocks (```json ... ```)
-    - JSON with leading/trailing text
-    - Malformed JSON with unescaped newlines/quotes
-    - Invalid control characters
-
-    Args:
-        text: Raw LLM response text
-
-    Returns:
-        Parsed JSON dictionary or None if extraction fails
-    """
-    if not text:
-        return None
-
-    # Try direct JSON parsing first
-    try:
-        return json.loads(text.strip())
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting from markdown code blocks
-    patterns = [
-        r'```json\s*([\s\S]*?)\s*```',  # ```json ... ```
-        r'```\s*([\s\S]*?)\s*```',       # ``` ... ```
-        r'\{[\s\S]*\}',                   # Find any JSON object
-    ]
-
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.MULTILINE)
-        for match in matches:
-            try:
-                # Clean up the match
-                cleaned = match.strip() if isinstance(match, str) else match
-
-                # Try sanitizing before parsing
-                sanitized = _sanitize_json_string(cleaned)
-                parsed = json.loads(sanitized)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                continue
-
-    # Last resort: try to find JSON-like structure and parse it
-    try:
-        # Find the first { and last }
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end + 1]
-
-            # Try sanitizing before parsing
-            sanitized = _sanitize_json_string(json_str)
-            return json.loads(sanitized)
-    except json.JSONDecodeError:
-        pass
-
-    logger.warning(f"Failed to extract JSON from response: {text[:200]}...")
-    return None
-
-
+# Local helper kept for backward compatibility (uses imported function internally)
 def _sanitize_json_string(text: str) -> str:
-    """
-    Sanitize JSON string by fixing common formatting issues.
-
-    Fixes:
-    - Unescaped newlines in string values
-    - Unescaped carriage returns
-    - Invalid control characters
-    - Mismatched quotes
-
-    Args:
-        text: Raw JSON string
-
-    Returns:
-        Sanitized JSON string
-    """
-    # Remove invalid control characters (except whitespace)
-    text = ''.join(ch for ch in text if ord(ch) >= 32 or ch in '\n\r\t')
-
-    # Replace literal newlines/carriage returns with escaped versions
-    # But be careful not to replace them inside string values
-    # This is a heuristic approach: replace \n with \\n outside of quotes
-
-    result = []
-    in_string = False
-    escape_next = False
-
-    for i, char in enumerate(text):
-        if escape_next:
-            result.append(char)
-            escape_next = False
-            continue
-
-        if char == '\\':
-            result.append(char)
-            escape_next = True
-            continue
-
-        if char == '"' and (i == 0 or text[i-1] != '\\'):
-            in_string = not in_string
-            result.append(char)
-        elif char == '\n' and not in_string:
-            # Literal newline outside string - skip it
-            continue
-        elif char == '\r' and not in_string:
-            # Literal carriage return outside string - skip it
-            continue
-        else:
-            result.append(char)
-
-    return ''.join(result)
+    """Wrapper for backward compatibility - delegates to utils.json_utils."""
+    return sanitize_json_string(text)
 
 
 def normalize_response_dict(response_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -204,22 +101,21 @@ def normalize_response_dict(response_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     logger.info("[FIX2] Normalizing response dictionary for schema compliance")
 
-    # Ensure answer is a string
-    answer = response_dict.get('answer', '')
-    if isinstance(answer, dict):
-        logger.warning("[FIX2] answer field is dict, converting to string")
-        # Try to extract text from dict
-        answer = answer.get('text', str(answer))
-    answer = str(answer).strip() if answer else "Unable to generate answer."
+    # Use consolidated utilities for type coercion
+    answer = ensure_string(
+        response_dict.get('answer', ''),
+        default="Unable to generate answer."
+    )
+    if not answer:
+        answer = "Unable to generate answer."
 
     # Ensure confidence is a float between 0-1
-    confidence = response_dict.get('confidence', 0.5)
-    try:
-        confidence = float(confidence)
-        confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
-    except (ValueError, TypeError):
-        logger.warning("[FIX2] Invalid confidence value, using default")
-        confidence = 0.5
+    confidence = ensure_float(
+        response_dict.get('confidence', 0.5),
+        default=0.5,
+        min_val=0.0,
+        max_val=1.0
+    )
 
     # Handle citations
     citations = response_dict.get('citations', [])
@@ -233,11 +129,10 @@ def normalize_response_dict(response_dict: Dict[str, Any]) -> Dict[str, Any]:
             continue
         try:
             valid_cite = {
-                'source': str(cite.get('source', 'unknown')),
-                'content': str(cite.get('content', '')),
-                'relevance': float(cite.get('relevance', 0.5))
+                'source': ensure_string(cite.get('source', 'unknown'), default='unknown'),
+                'content': ensure_string(cite.get('content', ''), default=''),
+                'relevance': ensure_float(cite.get('relevance', 0.5), default=0.5, min_val=0.0, max_val=1.0)
             }
-            valid_cite['relevance'] = max(0.0, min(1.0, valid_cite['relevance']))
             valid_citations.append(valid_cite)
         except (ValueError, TypeError):
             continue

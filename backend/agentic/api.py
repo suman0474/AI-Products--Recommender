@@ -24,15 +24,9 @@ from functools import wraps
 from rate_limiter import get_limiter
 from rate_limit_config import RateLimitConfig
 
-# Define login_required decorator locally to avoid circular import
-def login_required(func):
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({"error": "Unauthorized: Please log in"}), 401
-        return func(*args, **kwargs)
-    return decorated_function
-
+# Import consolidated decorators and utilities
+from .auth_decorators import login_required
+from .api_utils import api_response, handle_errors
 
 # Import tags module for response tagging
 from tags import classify_response, ResponseTags
@@ -112,43 +106,8 @@ def get_session_id() -> str:
     return session['agentic_session_id']
 
 
-def api_response(success: bool, data: Any = None, error: str = None, status_code: int = 200, tags: ResponseTags = None):
-    """
-    Create standardized API response with optional tags.
-
-    Args:
-        success: Whether the request was successful
-        data: Response data
-        error: Error message (if any)
-        status_code: HTTP status code
-        tags: Optional ResponseTags object for frontend routing/UI hints
-
-    Returns:
-        JSON response with optional tags field
-    """
-    response = {
-        "success": success,
-        "data": data,
-        "error": error
-    }
-
-    # Add tags if provided (backward compatible - only adds if tags exist)
-    if tags is not None:
-        response["tags"] = tags.dict()
-
-    return jsonify(response), status_code
-
-
-def handle_errors(f):
-    """Decorator for error handling"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        try:
-            return f(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"API Error: {e}")
-            return api_response(False, error=str(e), status_code=500)
-    return decorated_function
+# Note: api_response and handle_errors are imported from .api_utils
+# The api_response function supports tags parameter for backward compatibility
 
 
 # Rate limit decorator helpers

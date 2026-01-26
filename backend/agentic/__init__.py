@@ -2,6 +2,55 @@
 # LangChain Tools, Agents, and LangGraph Workflow Implementation
 
 # ============================================================================
+# CONSOLIDATED UTILITIES (Quick Wins Refactoring)
+# ============================================================================
+from .auth_decorators import (
+    login_required,
+    admin_required,
+    optional_auth
+)
+
+from .api_utils import (
+    api_response,
+    handle_errors,
+    validate_request_json,
+    validate_query_params
+)
+
+# ============================================================================
+# BASE CLASSES (Refactored for code reuse)
+# ============================================================================
+from .base_memory import (
+    BaseRAGMemory,
+    create_memory_singleton
+)
+
+from .base_cache import (
+    BaseLRUCache,
+    HashKeyCache,
+    CompositeKeyCache,
+    create_cache_singleton
+)
+
+from .base_agent import (
+    BaseRAGAgent,
+    AgentSingletonMeta,
+    get_agent_singleton
+)
+
+from .base_state import (
+    BaseRAGStateFields,
+    create_base_rag_state,
+    build_final_response,
+    update_processing_time,
+    should_retry,
+    increment_retry,
+    set_validation_result,
+    copy_state,
+    merge_states
+)
+
+# ============================================================================
 # MODELS
 # ============================================================================
 from .models import (
@@ -251,6 +300,45 @@ from .session_api import (
 
 
 __all__ = [
+    # ==================== CONSOLIDATED UTILITIES ====================
+    # Auth Decorators
+    'login_required',
+    'admin_required',
+    'optional_auth',
+
+    # API Utilities
+    'api_response',
+    'handle_errors',
+    'validate_request_json',
+    'validate_query_params',
+
+    # ==================== BASE CLASSES ====================
+    # Base Memory
+    'BaseRAGMemory',
+    'create_memory_singleton',
+
+    # Base Cache
+    'BaseLRUCache',
+    'HashKeyCache',
+    'CompositeKeyCache',
+    'create_cache_singleton',
+
+    # Base Agent
+    'BaseRAGAgent',
+    'AgentSingletonMeta',
+    'get_agent_singleton',
+
+    # Base State
+    'BaseRAGStateFields',
+    'create_base_rag_state',
+    'build_final_response',
+    'update_processing_time',
+    'should_retry',
+    'increment_retry',
+    'set_validation_result',
+    'copy_state',
+    'merge_states',
+
     # ==================== MODELS ====================
     # Original Models
     'WorkflowState',

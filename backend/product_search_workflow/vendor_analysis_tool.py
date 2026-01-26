@@ -53,16 +53,18 @@ class VendorAnalysisTool:
     4. Return matched products with detailed analysis
     """
 
-    def __init__(self, max_workers: int = 5, max_retries: int = 3):
+    def __init__(self, max_workers: int = 10, max_retries: int = 3):
         """
         Initialize the vendor analysis tool.
 
         Args:
-            max_workers: Maximum parallel workers for vendor analysis
+            max_workers: Maximum parallel workers for vendor analysis (PHASE 1 FIX: increased from 5 to 10)
             max_retries: Maximum retries for rate-limited requests
         """
         self.max_workers = max_workers
         self.max_retries = max_retries
+        # PHASE 1 FIX: Add response caching for repeated product type + requirements combinations
+        self._response_cache = {}  # Cache for vendor analysis responses
         logger.info("[VendorAnalysisTool] Initialized with max_workers=%d", max_workers)
 
     def analyze(
@@ -121,6 +123,19 @@ class VendorAnalysisTool:
         logger.info("[VendorAnalysisTool] Starting vendor analysis")
         logger.info("[VendorAnalysisTool] Product type: %s", product_type)
         logger.info("[VendorAnalysisTool] Session: %s", session_id or "N/A")
+
+        # PHASE 1 FIX: Check response cache for identical requests (saves 200-600 seconds)
+        import hashlib
+        try:
+            cache_key = hashlib.md5(
+                f"{product_type}:{json.dumps(structured_requirements, sort_keys=True, default=str)}".encode()
+            ).hexdigest()
+
+            if cache_key in self._response_cache:
+                logger.info("[VendorAnalysisTool] ✓ Cache hit - returning cached results (saves ~200-600 seconds)")
+                return self._response_cache[cache_key]
+        except Exception as cache_check_error:
+            logger.warning("[VendorAnalysisTool] Cache check failed: %s (continuing without cache)", cache_check_error)
 
         result = {
             "success": False,
@@ -408,10 +423,8 @@ class VendorAnalysisTool:
             with ThreadPoolExecutor(max_workers=actual_workers) as executor:
                 futures = {}
                 for i, (vendor, data) in enumerate(vendor_payloads.items()):
-                    # Stagger submissions to avoid rate limiting
-                    if i > 0:
-                        time.sleep(5)
-
+                    # PHASE 1 FIX: Removed time.sleep(5) - ThreadPoolExecutor handles concurrency
+                    # This alone saves 5 vendors × 5s = 25 seconds per request
                     future = executor.submit(
                         self._analyze_vendor,
                         components,
@@ -478,11 +491,56 @@ class VendorAnalysisTool:
                 match['is_preferred_vendor'] = vendor_name.lower() in [
                     p.lower() for p in (strategy_context.get('preferred_vendors', []) if strategy_context else [])
                 ]
-                
+
                 # Ensure requirementsMatch is set (Frontend relies on this)
                 if 'requirementsMatch' not in match:
                     score = match.get('matchScore', 0)
                     match['requirementsMatch'] = score >= 80
+
+            # ══════════════════════════════════════════════════════════════════════
+            # ENRICH MATCHES WITH VENDOR PRODUCT IMAGES (NEW)
+            # ══════════════════════════════════════════════════════════════════════
+            # Optionally fetch real product images from the web for each vendor
+            # This enriches vendor analysis results with authentic product imagery
+            logger.info("[VendorAnalysisTool] Step 7: Enriching matches with vendor product images")
+
+            try:
+                from agentic.vendor_image_utils import fetch_images_for_vendor_matches
+
+                # Group matches by vendor and enrich with images
+                vendor_groups = {}
+                for match in vendor_matches:
+                    vendor = match.get('vendor', '')
+                    if vendor not in vendor_groups:
+                        vendor_groups[vendor] = []
+                    vendor_groups[vendor].append(match)
+
+                # Fetch images for each vendor and enrich matches
+                for vendor_name, vendor_match_list in vendor_groups.items():
+                    try:
+                        logger.info(f"[VendorAnalysisTool] Fetching images for vendor: {vendor_name}")
+                        enriched = fetch_images_for_vendor_matches(
+                            vendor_name=vendor_name,
+                            matches=vendor_match_list,
+                            max_workers=2
+                        )
+                        # Update matches in vendor_matches list with enriched versions
+                        for enriched_match in enriched:
+                            for i, match in enumerate(vendor_matches):
+                                if (match.get('vendor') == enriched_match.get('vendor') and
+                                    match.get('productName') == enriched_match.get('productName')):
+                                    vendor_matches[i] = enriched_match
+                    except Exception as vendor_image_error:
+                        logger.warning(f"[VendorAnalysisTool] Failed to fetch images for {vendor_name}: {vendor_image_error}")
+                        # Continue without images - not critical to analysis
+
+                logger.info("[VendorAnalysisTool] Image enrichment complete")
+
+            except ImportError:
+                logger.debug("[VendorAnalysisTool] Image utilities not available - skipping image enrichment")
+            except Exception as image_enrichment_error:
+                logger.warning(f"[VendorAnalysisTool] Image enrichment failed: {image_enrichment_error}")
+                # Continue without images - analysis results are still valid
 
 
             # Generate enhanced summary with strategy info
@@ -499,6 +557,14 @@ class VendorAnalysisTool:
             logger.info("[VendorAnalysisTool] %s", result['analysis_summary'])
             if excluded_vendors:
                 logger.info("[VendorAnalysisTool] Excluded by strategy: %s", [e['vendor'] for e in excluded_vendors])
+
+            # PHASE 1 FIX: Cache successful results for future identical requests
+            try:
+                if result.get('success'):
+                    self._response_cache[cache_key] = result
+                    logger.info("[VendorAnalysisTool] ✓ Cached results for future requests (key: %s)", cache_key[:8])
+            except Exception as cache_write_error:
+                logger.warning("[VendorAnalysisTool] Failed to cache results: %s", cache_write_error)
 
             return result
 
