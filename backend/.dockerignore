@@ -1,0 +1,81 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+ENV/
+env/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files (copy manually or use Docker secrets)
+.env
+.env.*
+!.env.*.example
+
+# Local data (will be mounted as volumes)
+flask_session/
+instance/
+logs/
+*.db
+*.sqlite3
+
+# Large data files
+*.csv
+*.xlsx
+*.xls
+chroma_data/
+vector_store_data/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests
+tests/
+test_*.py
+*_test.py
+conftest.py
+.coverage
+htmlcov/
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.docker/
+
+# Misc
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
