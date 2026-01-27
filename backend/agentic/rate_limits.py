@@ -43,7 +43,7 @@ def initialize_rate_limits(limiter):
         return
 
     try:
-        from rate_limit_config import RateLimitConfig
+        from rate_limiter import RateLimitConfig
 
         # Create rate limit decorators with specific limits
         workflow_limit = limiter.limit(

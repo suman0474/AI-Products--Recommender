@@ -11,6 +11,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 import os
 from llm_fallback import create_llm_with_fallback
+from config import AgenticConfig
 from prompts_library import load_prompt
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def analyze_vendor_match_tool(
             }
 
         llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.1,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
@@ -204,7 +205,7 @@ def extract_specifications_tool(
     """
     try:
         llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.1,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )

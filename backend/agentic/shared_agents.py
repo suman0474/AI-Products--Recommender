@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
+from config import AgenticConfig
 from llm_fallback import create_llm_with_fallback
 from .llm_manager import get_cached_llm
 from prompts_library import load_prompt, load_prompt_sections
@@ -159,7 +160,7 @@ class ResponseValidatorAgent:
     def __init__(self, llm=None, components: Dict = None):
         self.components = components or {}
         self.llm = llm or get_cached_llm(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.1  # Low temperature for objective validation
         )
         logger.info("ResponseValidatorAgent initialized")
@@ -279,7 +280,7 @@ class WebSearchVerifierAgent:
     def __init__(self, llm=None, components: Dict = None):
         self.components = components or {}
         self.llm = llm or get_cached_llm(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.1  # Low temperature for objective verification
         )
         logger.info("WebSearchVerifierAgent initialized")
@@ -360,7 +361,7 @@ class ChatAgent:
     def __init__(self, llm=None, components: Dict = None):
         self.components = components or {}
         self.llm = llm or get_cached_llm(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.3
         )
         logger.info("ChatAgent initialized")

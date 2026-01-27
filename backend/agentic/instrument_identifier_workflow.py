@@ -10,17 +10,9 @@ from langgraph.graph import StateGraph, END
 
 from .models import (
     InstrumentIdentifierState,
-    create_instrument_identifier_state,
-    ItemState,
+    create_instrument_identifier_state
 )
 from .checkpointing import compile_with_checkpointing
-from .thread_manager import (
-    HierarchicalThreadManager,
-    ThreadTreeBuilder,
-    WorkflowThreadType,
-    ThreadZone,
-    get_thread_tree_builder,
-)
 
 from tools.intent_tools import classify_intent_tool
 from tools.instrument_tools import identify_instruments_tool, identify_accessories_tool
@@ -29,103 +21,59 @@ from tools.instrument_tools import identify_instruments_tool, identify_accessori
 from .standards_rag.standards_rag_enrichment import enrich_identified_items_with_standards
 
 import os
+from dotenv import load_dotenv
+from llm_fallback import create_llm_with_fallback
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from .llm_manager import get_cached_llm
-from prompts_library import load_prompt
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# PROMPTS - Loaded from prompts_library
+# PROMPTS
 # ============================================================================
 
-INSTRUMENT_LIST_PROMPT = load_prompt("instrument_list_prompt")
+INSTRUMENT_LIST_PROMPT = """
+You are Engenie's Instrument Presenter. Format the identified instruments and accessories for user selection.
+
+Identified Instruments:
+{instruments}
+
+Identified Accessories:
+{accessories}
+
+Project Name: {project_name}
+
+Create a numbered list for user selection. Each item should have:
+- number: Sequential number (1, 2, 3, ...)
+- type: "instrument" or "accessory"
+- name: Product name
+- category: Product category
+- quantity: How many needed
+- key_specs: Brief specification summary (1 line)
+
+Return ONLY valid JSON:
+{{
+    "formatted_list": [
+        {{
+            "number": 1,
+            "type": "instrument" | "accessory",
+            "name": "<product name>",
+            "category": "<category>",
+            "quantity": <quantity>,
+            "key_specs": "<brief specs>"
+        }}
+    ],
+    "total_items": <count>,
+    "message": "Please select an item number to search for products."
+}}
+"""
 
 
 # ============================================================================
 # WORKFLOW NODES
 # ============================================================================
-
-def initialize_thread_tree_node(state: InstrumentIdentifierState) -> InstrumentIdentifierState:
-    """
-    Node 0: Initialize Thread Tree.
-
-    ✅ UPDATED: USE UI-PROVIDED IDs (Don't Generate)
-
-    The UI creates and provides:
-    - main_thread_id: From user session
-    - workflow_thread_id: For this workflow execution
-    - zone: Geographic zone
-
-    Backend validates they're provided and stores them in state.
-    """
-    logger.info("[IDENTIFIER] Node 0: Initializing thread tree (using UI-provided IDs)...")
-
-    try:
-        # Get values from state
-        main_thread_id = state.get("main_thread_id")
-        workflow_thread_id = state.get("workflow_thread_id")
-        zone_str = state.get("zone")
-        user_id = state.get("user_id") or state.get("session_id", "anonymous")
-
-        # ZONE DETECTION: Use provided zone or detect from IP
-        if not zone_str or zone_str == "DEFAULT":
-            try:
-                from utils.zone_detector import detect_zone_from_request
-                zone = detect_zone_from_request()
-                logger.info(f"[IDENTIFIER] Detected zone: {zone.value}")
-            except Exception as e:
-                logger.warning(f"[IDENTIFIER] Zone detection failed: {e}, using DEFAULT")
-                zone = ThreadZone.DEFAULT
-        else:
-            try:
-                zone = ThreadZone.from_string(zone_str)
-            except Exception as e:
-                logger.warning(f"[IDENTIFIER] Invalid zone '{zone_str}', using DEFAULT")
-                zone = ThreadZone.DEFAULT
-
-        # MAIN THREAD ID: Generate if not provided
-        if not main_thread_id:
-            main_thread_id = HierarchicalThreadManager.generate_main_thread_id(
-                user_id=user_id,
-                zone=zone
-            )
-            state["main_thread_id"] = main_thread_id
-            logger.info(f"[IDENTIFIER] Generated main thread ID: {main_thread_id}")
-        else:
-            logger.info(f"[IDENTIFIER] Using provided main thread ID: {main_thread_id}")
-
-        # WORKFLOW THREAD ID: Generate if not provided
-        if not workflow_thread_id:
-            workflow_thread_id = HierarchicalThreadManager.generate_workflow_thread_id(
-                workflow_type=WorkflowThreadType.INSTRUMENT_IDENTIFIER,
-                main_thread_id=main_thread_id
-            )
-            state["workflow_thread_id"] = workflow_thread_id
-            logger.info(f"[IDENTIFIER] Generated workflow thread ID: {workflow_thread_id}")
-        else:
-            logger.info(f"[IDENTIFIER] Using provided workflow thread ID: {workflow_thread_id}")
-
-        
-        # Update state
-        state["zone"] = zone.value
-        state["item_threads"] = {}
-
-        state["messages"] = state.get("messages", []) + [{
-            "role": "system",
-            "content": f"Thread tree initialized: main={main_thread_id}, workflow={workflow_thread_id}, zone={zone.value}"
-        }]
-
-        logger.info(f"[IDENTIFIER] Thread tree initialization complete")
-
-    except Exception as e:
-        logger.error(f"[IDENTIFIER] Thread tree initialization failed: {e}")
-        # Non-fatal - continue with workflow even if thread init fails
-        state["error"] = f"Thread init warning: {str(e)}"
-
-    return state
-
 
 def classify_initial_intent_node(state: InstrumentIdentifierState) -> InstrumentIdentifierState:
     """
@@ -247,35 +195,23 @@ def identify_instruments_and_accessories_node(state: InstrumentIdentifierState) 
         detected_instruments = []
         for keyword, (product_name, category) in instrument_keywords.items():
             if keyword in user_input_lower:
-                sample_input = f"{product_name} for {state['user_input'][:100]}"
-                if len(sample_input) < 50:
-                    sample_input = (sample_input + " " + state['user_input'])[:100]
-                if len(sample_input) < 50:
-                    sample_input = sample_input.ljust(50, '.')
-                
                 detected_instruments.append({
                     "category": category,
                     "product_name": product_name,
                     "quantity": 1,
                     "specifications": {},
-                    "sample_input": sample_input,
+                    "sample_input": f"{product_name} for {state['user_input'][:100]}",
                     "strategy": "keyword_extraction"
                 })
         
         # If still nothing, create a generic item
         if not detected_instruments:
-            sample_input = state["user_input"][:200] if len(state["user_input"]) > 200 else state["user_input"]
-            if len(sample_input) < 50:
-                sample_input = (sample_input + " Industrial application requirements for process control and measurement.").strip()[:200]
-            if len(sample_input) < 50:
-                sample_input = sample_input.ljust(50, '.')
-
             detected_instruments = [{
                 "category": "Industrial Instrument",
                 "product_name": "General Instrument",
                 "quantity": 1,
                 "specifications": {},
-                "sample_input": sample_input,
+                "sample_input": state["user_input"][:200] if len(state["user_input"]) > 200 else state["user_input"],
                 "strategy": "generic_fallback"
             }]
             logger.warning("[IDENTIFIER] Created generic fallback instrument")
@@ -305,14 +241,8 @@ def identify_instruments_and_accessories_node(state: InstrumentIdentifierState) 
 
     # Add accessories
     for accessory in state["identified_accessories"]:
-        # Use LLM-provided sample_input if available, otherwise construct it
-        acc_sample_input = accessory.get("sample_input")
-        if not acc_sample_input:
-            acc_sample_input = f"{accessory.get('category', 'Accessory')} for {accessory.get('related_instrument', 'instruments')}"
-            if len(acc_sample_input) < 50:
-                acc_sample_input = (acc_sample_input + " Industrial accessory for process measurement and field installation.").strip()[:200]
-            if len(acc_sample_input) < 50:
-                acc_sample_input = acc_sample_input.ljust(50, '.')
+        # Construct sample_input for accessories
+        acc_sample_input = f"{accessory.get('category', 'Accessory')} for {accessory.get('related_instrument', 'instruments')}"
         
         # Smart category extraction: If category is generic "Accessories" or "Accessory",
         # extract the product type from accessory_name (e.g., "Thermowell for X" -> "Thermowell")
@@ -583,7 +513,12 @@ def format_selection_list_node(state: InstrumentIdentifierState) -> InstrumentId
     # === END DEBUG ===
 
     try:
-        llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.1)
+        llm = create_llm_with_fallback(
+            model="gemini-2.5-flash",
+            temperature=0.1,
+            google_api_key=os.getenv("GOOGLE_API_KEY")
+        )
+
 
         prompt = ChatPromptTemplate.from_template(INSTRUMENT_LIST_PROMPT)
         parser = JsonOutputParser()
@@ -630,42 +565,13 @@ def format_selection_list_node(state: InstrumentIdentifierState) -> InstrumentId
         )
 
         state["response"] = "\n".join(response_lines)
-
+        
         # === MERGE DEEP AGENT SPECS FOR UI DISPLAY ===
         # This ensures Deep Agent specifications are shown in UI with [STANDARDS] labels
         _merge_deep_agent_specs_for_display(state["all_items"])
-
-        # === ADD GENERIC IMAGES TO ITEMS ===
-        # Batch fetch generic images for all items
-        try:
-            from generic_image_utils import fetch_generic_images_batch
-            
-            # Collect product types
-            product_types = []
-            for item in state["all_items"]:
-                # Use name or category as product type
-                p_type = item.get("name") or item.get("category") or "Instrument"
-                product_types.append(p_type)
-            
-            # Fetch batch (fast parallel cache check)
-            if product_types:
-                logger.info(f"[IDENTIFIER] Fetching generic images for {len(product_types)} items...")
-                image_results = fetch_generic_images_batch(product_types)
-                
-                # Attach images to items
-                for item in state["all_items"]:
-                    p_type = item.get("name") or item.get("category") or "Instrument"
-                    if p_type in image_results and image_results[p_type]:
-                        item["image_url"] = image_results[p_type].get("url")
-                    else:
-                        # Fallback or placeholder handling done by frontend if url is missing
-                        pass
-        except Exception as img_err:
-             logger.warning(f"[IDENTIFIER] Failed to fetch generic images: {img_err}")
-        
         logger.info(f"[IDENTIFIER] Merged Deep Agent specs for {len(state['all_items'])} items")
         # === END MERGE ===
-
+        
         state["response_data"] = {
             "workflow": "instrument_identifier",
             "project_name": state["project_name"],
@@ -676,25 +582,6 @@ def format_selection_list_node(state: InstrumentIdentifierState) -> InstrumentId
         }
 
         state["current_step"] = "complete"
-
-        # ✅ DO NOT GENERATE ITEM THREAD IDs HERE
-        # UI creates item thread IDs when it receives the item list
-        # Backend does NOT need to generate them anymore
-        # The UI will call: addItemThread(workflowThreadId, itemNumber, itemName, itemType)
-        logger.info(f"[IDENTIFIER] ✅ Item threads will be created by UI")
-
-        # === BUILD THREAD INFO FOR API RESPONSE ===
-        # Return the thread IDs that the UI provided (no item threads yet, UI creates those)
-        state["thread_info"] = {
-            "main_thread_id": state.get("main_thread_id"),
-            "workflow_thread_id": state.get("workflow_thread_id"),
-            "zone": state.get("zone"),
-            "item_threads": {},  # Empty - UI will create item threads
-            "thread_tree": {
-                "type": "instrument_identifier",
-                "items_count": state.get("total_items", 0),
-            }
-        }
 
         logger.info(f"[IDENTIFIER] Selection list formatted with {state['total_items']} items")
 
@@ -849,8 +736,6 @@ def enrich_with_standards_node(state: InstrumentIdentifierState) -> InstrumentId
     except Exception as e:
         logger.error(f"[IDENTIFIER] Specification enrichment failed: {e}")
         import traceback
-        full_trace = traceback.format_exc()
-        logger.error(f"[IDENTIFIER] Full traceback:\n{full_trace}")
         traceback.print_exc()
         state["messages"] = state.get("messages", []) + [{
             "role": "system",
@@ -900,45 +785,34 @@ def create_instrument_identifier_workflow() -> StateGraph:
     """
     Create the Instrument Identifier Workflow.
 
-    This workflow identifies instruments/accessories and presents them for user selection.
-    It does NOT perform product search.
+    This is a simplified 3-node workflow that ONLY identifies instruments/accessories
+    and presents them for user selection. It does NOT perform product search.
 
     Flow:
-    0. Initialize Thread Tree (NEW - sets up hierarchical thread IDs)
     1. Initial Intent Classification
     2. Instrument/Accessory Identification (with sample_input generation)
-    3. Standards RAG Enrichment
-    4. Format Selection List (generates item thread IDs)
+    3. Format Selection List
 
     After this workflow completes, user selects an item, and the sample_input
     is routed to the SOLUTION workflow for product search.
-
-    Thread Hierarchy Created:
-        main_{user_id}_{zone}_{timestamp}
-        └── instrument_identifier_{main_ref}_{timestamp}
-            ├── item_{wf_ref}_inst_{hash}_{timestamp}
-            ├── item_{wf_ref}_inst_{hash}_{timestamp}
-            └── item_{wf_ref}_acc_{hash}_{timestamp}
     """
 
     workflow = StateGraph(InstrumentIdentifierState)
 
-    # Add 5 nodes (including thread init and Standards RAG enrichment)
-    workflow.add_node("init_thread_tree", initialize_thread_tree_node)  # NEW: Thread tree init
+    # Add 4 nodes (including Standards RAG enrichment)
     workflow.add_node("classify_intent", classify_initial_intent_node)
     workflow.add_node("identify_items", identify_instruments_and_accessories_node)
-    workflow.add_node("enrich_with_standards", enrich_with_standards_node)
+    workflow.add_node("enrich_with_standards", enrich_with_standards_node)  # NEW: Standards RAG
     workflow.add_node("format_list", format_selection_list_node)
 
-    # Set entry point - start with thread tree initialization
-    workflow.set_entry_point("init_thread_tree")
+    # Set entry point
+    workflow.set_entry_point("classify_intent")
 
-    # Add edges - linear flow with thread init first
-    workflow.add_edge("init_thread_tree", "classify_intent")  # NEW: Start with thread init
+    # Add edges - linear flow with Standards RAG enrichment
     workflow.add_edge("classify_intent", "identify_items")
-    workflow.add_edge("identify_items", "enrich_with_standards")
-    workflow.add_edge("enrich_with_standards", "format_list")
-    workflow.add_edge("format_list", END)
+    workflow.add_edge("identify_items", "enrich_with_standards")  # NEW: Route to Standards RAG
+    workflow.add_edge("enrich_with_standards", "format_list")  # NEW: Then to formatting
+    workflow.add_edge("format_list", END)  # WORKFLOW ENDS HERE - waits for user selection
 
     return workflow
 
@@ -950,10 +824,7 @@ def create_instrument_identifier_workflow() -> StateGraph:
 def run_instrument_identifier_workflow(
     user_input: str,
     session_id: str = "default",
-    checkpointing_backend: str = "memory",
-    main_thread_id: str = None,
-    workflow_thread_id: str = None,
-    zone: str = "DEFAULT"
+    checkpointing_backend: str = "memory"
 ) -> Dict[str, Any]:
     """
     Run the instrument identifier workflow.
@@ -965,9 +836,6 @@ def run_instrument_identifier_workflow(
         user_input: User's project requirements (e.g., "I need instruments for crude oil refinery")
         session_id: Session identifier
         checkpointing_backend: Backend for state persistence
-        main_thread_id: ✅ UI-provided main thread ID (format: main_*)
-        workflow_thread_id: ✅ UI-provided workflow thread ID
-        zone: Geographic zone (US-WEST, US-EAST, etc.)
 
     Returns:
         {
@@ -993,21 +861,8 @@ def run_instrument_identifier_workflow(
         logger.info(f"[IDENTIFIER] Starting workflow for session: {session_id}")
         logger.info(f"[IDENTIFIER] User input: {user_input[:100]}...")
 
-        # ✅ CREATE INITIAL STATE WITH UI-PROVIDED THREAD IDS
+        # Create initial state
         initial_state = create_instrument_identifier_state(user_input, session_id)
-
-        # ✅ ADD UI-PROVIDED THREAD IDS TO STATE (if provided)
-        if main_thread_id:
-            initial_state["main_thread_id"] = main_thread_id
-            logger.info(f"[IDENTIFIER] Using UI-provided main_thread_id: {main_thread_id}")
-
-        if workflow_thread_id:
-            initial_state["workflow_thread_id"] = workflow_thread_id
-            logger.info(f"[IDENTIFIER] Using UI-provided workflow_thread_id: {workflow_thread_id}")
-
-        if zone:
-            initial_state["zone"] = zone
-            logger.info(f"[IDENTIFIER] Using zone: {zone}")
 
         # Create and compile workflow
         workflow = create_instrument_identifier_workflow()
@@ -1022,15 +877,9 @@ def run_instrument_identifier_workflow(
         logger.info(f"[IDENTIFIER] Workflow completed successfully")
         logger.info(f"[IDENTIFIER] Generated {result.get('total_items', 0)} items for selection")
 
-        # Include thread_info in response
-        response_data = result.get("response_data", {})
-        if result.get("thread_info"):
-            response_data["thread_info"] = result.get("thread_info")
-
         return {
             "response": result.get("response", ""),
-            "response_data": response_data,
-            "thread_info": result.get("thread_info", {})
+            "response_data": result.get("response_data", {})
         }
 
     except Exception as e:

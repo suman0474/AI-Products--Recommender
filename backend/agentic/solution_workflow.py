@@ -28,17 +28,9 @@ from langgraph.graph import StateGraph, END
 
 from .models import (
     SolutionState,
-    create_solution_state,
-    ItemState,
+    create_solution_state
 )
 from .checkpointing import compile_with_checkpointing
-from .thread_manager import (
-    HierarchicalThreadManager,
-    ThreadTreeBuilder,
-    WorkflowThreadType,
-    ThreadZone,
-    get_thread_tree_builder,
-)
 
 from tools.intent_tools import classify_intent_tool
 from tools.instrument_tools import identify_instruments_tool, identify_accessories_tool
@@ -50,104 +42,103 @@ from .standards_rag.standards_rag_enrichment import (
 )
 
 import os
+from dotenv import load_dotenv
+from llm_fallback import create_llm_with_fallback
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from .llm_manager import get_cached_llm
-from prompts_library import load_prompt_sections
 
 # Import lock utilities
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.workflow_sync import with_workflow_lock
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# PROMPTS - Loaded from consolidated prompts_library file
+# PROMPTS
 # =============================================================================
 
-_SOLUTION_WORKFLOW_PROMPTS = load_prompt_sections("solution_workflow_prompts")
+SOLUTION_ANALYSIS_PROMPT = """
+You are Engenie's Solution Analyzer. Analyze the user's solution description and extract:
+1. Industry domain (Oil & Gas, Chemical, Pharma, etc.)
+2. Process type (Distillation, Refining, Manufacturing, etc.)
+3. Key operational parameters (temperature, pressure, flow rates, etc.)
+4. Safety requirements (SIL levels, hazardous areas, etc.)
+5. Environmental conditions
 
-SOLUTION_ANALYSIS_PROMPT = _SOLUTION_WORKFLOW_PROMPTS["ANALYSIS"]
-SOLUTION_INSTRUMENT_LIST_PROMPT = _SOLUTION_WORKFLOW_PROMPTS["INSTRUMENT_LIST"]
+User's Solution Description:
+{solution_description}
+
+Return ONLY valid JSON:
+{{
+    "solution_name": "<descriptive name for the solution>",
+    "industry": "<industry domain>",
+    "process_type": "<type of process>",
+    "key_parameters": {{
+        "temperature_range": "<if mentioned>",
+        "pressure_range": "<if mentioned>",
+        "flow_rates": "<if mentioned>",
+        "materials": ["<materials handled>"]
+    }},
+    "safety_requirements": {{
+        "sil_level": "<SIL level if mentioned>",
+        "atex_zone": "<ATEX zone if mentioned>",
+        "hazardous_area": <true/false>
+    }},
+    "environmental": {{
+        "location": "<indoor/outdoor>",
+        "conditions": "<special conditions>"
+    }},
+    "context_for_instruments": "<summary context to help identify instruments>"
+}}
+"""
+
+SOLUTION_INSTRUMENT_LIST_PROMPT = """
+You are Engenie's Solution Instrument Presenter. Format the identified instruments and 
+accessories for user selection, specifically tailored for the solution context.
+
+Solution Analysis:
+{solution_analysis}
+
+Identified Instruments:
+{instruments}
+
+Identified Accessories:
+{accessories}
+
+Create a numbered list for user selection. Each item should have:
+- number: Sequential number (1, 2, 3, ...)
+- type: "instrument" or "accessory"
+- name: Product name
+- category: Product category  
+- quantity: How many needed
+- purpose: Why this is needed for the solution
+- key_specs: Brief specification summary based on solution requirements
+
+Return ONLY valid JSON:
+{{
+    "formatted_list": [
+        {{
+            "number": 1,
+            "type": "instrument" | "accessory",
+            "name": "<product name>",
+            "category": "<category>",
+            "quantity": <quantity>,
+            "purpose": "<why needed for this solution>",
+            "key_specs": "<specs derived from solution context>"
+        }}
+    ],
+    "total_items": <count>,
+    "solution_summary": "<brief summary of the solution and its instrument needs>"
+}}
+"""
 
 
 # =============================================================================
 # WORKFLOW NODES
 # =============================================================================
-
-def initialize_thread_tree_node(state: SolutionState) -> SolutionState:
-    """
-    Node 0: Initialize Thread Tree.
-
-    ✅ UPDATED: USE UI-PROVIDED IDs (Don't Generate)
-
-    The UI creates and provides:
-    - main_thread_id: From user session
-    - workflow_thread_id: For this workflow execution
-    - zone: Geographic zone
-
-    Backend validates they're provided and stores them in state.
-    """
-    logger.info("[SOLUTION] Node 0: Initializing thread tree (using UI-provided IDs)...")
-
-    try:
-        # ✅ EXPECT THREAD IDS FROM UI REQUEST (with fallback for backward compatibility)
-        main_thread_id = state.get("main_thread_id")
-        workflow_thread_id = state.get("workflow_thread_id")
-        zone_str = state.get("zone", "DEFAULT")
-
-        # ✅ FALLBACK: Generate IDs if not provided (backward compatibility)
-        # Note: With updated frontend (Task #1), these should rarely trigger
-        if not main_thread_id:
-            import uuid
-            main_thread_id = f"main_{uuid.uuid4().hex[:12]}"
-            logger.debug(f"[SOLUTION] main_thread_id not provided by UI, generated fallback: {main_thread_id}")
-
-        if not workflow_thread_id:
-            import uuid
-            workflow_thread_id = f"sol_{uuid.uuid4().hex[:12]}"
-            logger.debug(f"[SOLUTION] workflow_thread_id not provided by UI, generated fallback: {workflow_thread_id}")
-
-        # ✅ CONVERT ZONE STRING TO ENUM
-        try:
-            zone = ThreadZone.from_string(zone_str)
-        except Exception as e:
-            logger.warning(f"[SOLUTION] Invalid zone '{zone_str}', using DEFAULT")
-            zone = ThreadZone.DEFAULT
-
-        # ✅ LOG FOR DEBUGGING - explicitly indicate origin
-        logger.info(f"[SOLUTION] Using UI-provided thread IDs:")
-        logger.info(f"[SOLUTION]   Main Thread ID: {main_thread_id}")
-        logger.info(f"[SOLUTION]   Workflow Thread ID: {workflow_thread_id}")
-        logger.info(f"[SOLUTION]   Zone: {zone.value}")
-
-        # ✅ STORE IN STATE (already there from request, but validate)
-        state["main_thread_id"] = main_thread_id
-        state["workflow_thread_id"] = workflow_thread_id
-        state["zone"] = zone.value
-
-        # ✅ INITIALIZE ITEM_THREADS (UI will create item threads on response)
-        state["item_threads"] = {}
-
-        state["messages"] = state.get("messages", []) + [{
-            "role": "system",
-            "content": f"Thread context initialized: main={main_thread_id[:30]}..., workflow={workflow_thread_id[:30]}..., zone={zone.value}"
-        }]
-
-    except ValueError as ve:
-        # Validation error - these are CRITICAL
-        logger.error(f"[SOLUTION] Thread ID validation failed: {ve}")
-        state["error"] = str(ve)
-        raise  # Re-raise to fail the workflow
-
-    except Exception as e:
-        logger.error(f"[SOLUTION] Thread tree initialization failed: {e}")
-        state["error"] = f"Thread init error: {str(e)}"
-        raise  # Fail the workflow if thread init fails
-
-    return state
-
 
 def analyze_solution_node(state: SolutionState) -> SolutionState:
     """
@@ -158,7 +149,11 @@ def analyze_solution_node(state: SolutionState) -> SolutionState:
     logger.info("[SOLUTION] Node 1: Analyzing solution context...")
 
     try:
-        llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.1)
+        llm = create_llm_with_fallback(
+            model="gemini-2.5-flash",
+            temperature=0.1,
+            google_api_key=os.getenv("GOOGLE_API_KEY")
+        )
 
         prompt = ChatPromptTemplate.from_template(SOLUTION_ANALYSIS_PROMPT)
         parser = JsonOutputParser()
@@ -274,20 +269,9 @@ def identify_solution_instruments_node(state: SolutionState) -> SolutionState:
 
             # Enrich accessories with solution context
             for acc in accessories:
-                acc_sample_input = acc.get("sample_input")
-                
-                # If LLM didn't provide one, generate it
-                if not acc_sample_input:
-                    acc_sample_input = f"{acc.get('category', 'Accessory')} for {acc.get('related_instrument', 'instruments')}"
-                    if solution_analysis.get("safety_requirements", {}).get("hazardous_area"):
-                        acc_sample_input += " (explosion-proof required)"
-                    
-                    # Ensure minimum length
-                    if len(acc_sample_input) < 50:
-                        acc_sample_input = (acc_sample_input + " Industrial accessory for process measurement and field installation.").strip()[:200]
-                    if len(acc_sample_input) < 50:
-                        acc_sample_input = acc_sample_input.ljust(50, '.')
-                
+                acc_sample_input = f"{acc.get('category', 'Accessory')} for {acc.get('related_instrument', 'instruments')}"
+                if solution_analysis.get("safety_requirements", {}).get("hazardous_area"):
+                    acc_sample_input += " (explosion-proof required)"
                 acc["sample_input"] = acc_sample_input
 
             state["identified_accessories"] = accessories
@@ -299,18 +283,12 @@ def identify_solution_instruments_node(state: SolutionState) -> SolutionState:
             industry = solution_analysis.get("industry", "Industrial")
             process_type = solution_analysis.get("process_type", "process")
             
-            sample_input = f"Industrial instrument for {process_type} measurement in {industry} industry"
-            if len(sample_input) < 50:
-                sample_input = (sample_input + " supporting process control and automation standards.").strip()
-            if len(sample_input) < 50:
-                sample_input = sample_input.ljust(50, '.')
-
             state["identified_instruments"] = [{
                 "category": "Process Instrument",
                 "product_name": f"{industry} Instrument",
                 "quantity": 1,
                 "specifications": {},
-                "sample_input": sample_input,
+                "sample_input": f"Industrial instrument for {process_type} in {industry}",
                 "solution_purpose": f"General instrumentation for {state.get('solution_name', 'solution')}"
             }]
 
@@ -365,60 +343,13 @@ def identify_solution_instruments_node(state: SolutionState) -> SolutionState:
         state["all_items"] = all_items
         state["total_items"] = len(all_items)
 
-        # =====================================================================
-        # UNIVERSAL VALIDATION FRAMEWORK
-        # =====================================================================
-
-        # Count items by type for validation
-        instrument_count = len(state["identified_instruments"])
-        accessory_count = len(state["identified_accessories"])
-        total_items = instrument_count + accessory_count
-
-        # Validate all items have type field
-        items_without_type = [item for item in all_items if "type" not in item or not item["type"]]
-        if items_without_type:
-            logger.error(f"[SOLUTION] ❌ VALIDATION ERROR: {len(items_without_type)} items missing 'type' field!")
-            for item in items_without_type:
-                logger.error(f"[SOLUTION]   Missing type: {item.get('name', 'Unknown')}")
-            raise ValueError(f"{len(items_without_type)} items missing type field - validation failed")
-
-        # Validate at least one item exists
-        if total_items == 0:
-            logger.error("[SOLUTION] ❌ VALIDATION ERROR: No items identified (instruments + accessories = 0)")
-            raise ValueError("No items identified - workflow failed")
-
-        # Check for instruments (warn if missing)
-        if instrument_count == 0:
-            logger.warning("[SOLUTION] ⚠️ WARNING: No instruments found - this may indicate workflow error")
-            logger.warning("[SOLUTION]   Expected at least one instrument for solution workflow")
-
-        # Check for accessories (warn if missing)
-        if accessory_count == 0:
-            logger.warning("[SOLUTION] ⚠️ WARNING: No accessories found - solution may be incomplete")
-            logger.warning("[SOLUTION]   User may not have complete system requirements")
-
-        # Log detailed item breakdown
-        logger.info(f"[SOLUTION] ✅ Items validated and formatted:")
-        logger.info(f"[SOLUTION]    {instrument_count} instruments identified")
-        logger.info(f"[SOLUTION]    {accessory_count} accessories identified")
-        logger.info(f"[SOLUTION]    {total_items} total items")
-
-        # Create item summary for response metadata
-        state["item_summary"] = {
-            "instruments": instrument_count,
-            "accessories": accessory_count,
-            "total": total_items,
-            "items_by_type": {
-                "instrument": [i["name"] for i in all_items if i.get("type") == "instrument"],
-                "accessory": [i["name"] for i in all_items if i.get("type") == "accessory"]
-            }
-        }
-
         state["current_step"] = "format_list"
+
+        total_items = len(state["identified_instruments"]) + len(state["identified_accessories"])
 
         state["messages"] = state.get("messages", []) + [{
             "role": "system",
-            "content": f"Identified {instrument_count} instruments and {accessory_count} accessories for solution"
+            "content": f"Identified {len(state['identified_instruments'])} instruments and {len(state['identified_accessories'])} accessories for solution"
         }]
 
         logger.info(f"[SOLUTION] Found {total_items} items for solution")
@@ -652,8 +583,6 @@ def enrich_solution_with_standards_node(state: SolutionState) -> SolutionState:
     except Exception as e:
         logger.error(f"[SOLUTION] Specification enrichment failed: {e}")
         import traceback
-        full_trace = traceback.format_exc()
-        logger.error(f"[SOLUTION] Full traceback:\n{full_trace}")
         traceback.print_exc()
         state["messages"] = state.get("messages", []) + [{
             "role": "system",
@@ -899,7 +828,11 @@ def format_solution_list_node(state: SolutionState) -> SolutionState:
     # === END DEBUG ===
 
     try:
-        llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.1)
+        llm = create_llm_with_fallback(
+            model="gemini-2.5-flash",
+            temperature=0.1,
+            google_api_key=os.getenv("GOOGLE_API_KEY")
+        )
 
         prompt = ChatPromptTemplate.from_template(SOLUTION_INSTRUMENT_LIST_PROMPT)
         parser = JsonOutputParser()
@@ -959,69 +892,22 @@ def format_solution_list_node(state: SolutionState) -> SolutionState:
         )
 
         state["response"] = "\n".join(response_lines)
-
+        
         # === MERGE DEEP AGENT SPECS FOR UI DISPLAY ===
         # This ensures Deep Agent specifications are shown in UI with [STANDARDS] labels
         _merge_deep_agent_specs_for_display(state["all_items"])
-
-        # === ADD GENERIC IMAGES TO ITEMS ===
-        # Batch fetch generic images for all items
-        try:
-            from generic_image_utils import fetch_generic_images_batch
-            
-            # Collect product types
-            product_types = []
-            for item in state["all_items"]:
-                # Use name or category as product type
-                p_type = item.get("name") or item.get("category") or "Instrument"
-                product_types.append(p_type)
-            
-            # Fetch batch (fast parallel cache check)
-            if product_types:
-                logger.info(f"[SOLUTION] Fetching generic images for {len(product_types)} items...")
-                image_results = fetch_generic_images_batch(product_types)
-                
-                # Attach images to items
-                for item in state["all_items"]:
-                    p_type = item.get("name") or item.get("category") or "Instrument"
-                    if p_type in image_results and image_results[p_type]:
-                        item["image_url"] = image_results[p_type].get("url")
-        except Exception as img_err:
-             logger.warning(f"[SOLUTION] Failed to fetch generic images: {img_err}")
-
         logger.info(f"[SOLUTION] Merged Deep Agent specs for {len(state['all_items'])} items")
         # === END MERGE ===
-
-        # ✅ DO NOT GENERATE ITEM THREAD IDs HERE
-        # UI creates item thread IDs when it receives the item list
-        # Backend does NOT need to generate them anymore
-        # The UI will call: addItemThread(workflowThreadId, itemNumber, itemName, itemType)
-        logger.info(f"[SOLUTION] ✅ Item threads will be created by UI")
-
-        # === BUILD THREAD INFO FOR API RESPONSE ===
-        # Return the thread IDs that the UI provided (no item threads yet, UI creates those)
-        state["thread_info"] = {
-            "main_thread_id": state.get("main_thread_id"),
-            "workflow_thread_id": state.get("workflow_thread_id"),
-            "zone": state.get("zone"),
-            "item_threads": {},  # Empty - UI will create item threads
-            "thread_tree": {
-                "type": "solution",
-                "solution_name": solution_name,
-                "items_count": state.get("total_items", 0),
-            }
-        }
-
+        
         state["response_data"] = {
             "workflow": "solution",
             "solution_name": solution_name,
             "solution_analysis": solution_analysis,
             "project_name": solution_name,  # For compatibility
-            "items": state["all_items"],  # Full items with merged specs and thread_ids
+            "items": state["all_items"],  # Full items with merged specs
             "total_items": state["total_items"],
             "awaiting_selection": True,
-            "instructions": f"Reply with item number (1-{state['total_items']}) to get product recommendations",
-            "thread_info": state.get("thread_info", {})  # Include thread info in response_data
+            "instructions": f"Reply with item number (1-{state['total_items']}) to get product recommendations"
         }
 
         state["current_step"] = "complete"
@@ -1070,21 +956,12 @@ def create_solution_workflow() -> StateGraph:
     instruments/accessories, similar to instrument_identifier_workflow.py.
 
     Flow:
-    0. Initialize Thread Tree (NEW - sets up hierarchical thread IDs)
     1. Analyze Solution Context (domain, process, safety)
     2. Identify Instruments & Accessories (with sample_input generation)
-    3. Standards RAG Enrichment
-    4. Format Selection List (generates item thread IDs)
+    3. Format Selection List
 
     After this workflow completes, user selects an item, and the sample_input
     is routed to the PRODUCT SEARCH workflow.
-
-    Thread Hierarchy Created:
-        main_{user_id}_{zone}_{timestamp}
-        └── solution_{main_ref}_{timestamp}
-            ├── item_{wf_ref}_inst_{hash}_{timestamp}
-            ├── item_{wf_ref}_inst_{hash}_{timestamp}
-            └── item_{wf_ref}_acc_{hash}_{timestamp}
 
     Architecture:
     ┌─────────────────────────────────────────────────────────────┐
@@ -1092,11 +969,6 @@ def create_solution_workflow() -> StateGraph:
     ├─────────────────────────────────────────────────────────────┤
     │  User: "I'm designing a crude oil distillation unit..."    │
     │                              ↓                               │
-    │  ┌───────────────────────────────────────────────────────┐  │
-    │  │           init_thread_tree                             │  │
-    │  │   (Initialize hierarchical thread IDs)                 │  │
-    │  └──────────────────────┬────────────────────────────────┘  │
-    │                         ↓                                    │
     │  ┌───────────────────────────────────────────────────────┐  │
     │  │           analyze_solution                             │  │
     │  │   (Extract domain, process, safety requirements)       │  │
@@ -1108,13 +980,8 @@ def create_solution_workflow() -> StateGraph:
     │  └──────────────────────┬────────────────────────────────┘  │
     │                         ↓                                    │
     │  ┌───────────────────────────────────────────────────────┐  │
-    │  │           enrich_with_standards                        │  │
-    │  │   (Standards RAG enrichment)                           │  │
-    │  └──────────────────────┬────────────────────────────────┘  │
-    │                         ↓                                    │
-    │  ┌───────────────────────────────────────────────────────┐  │
     │  │            format_solution_list                        │  │
-    │  │   (Generate numbered list + item thread IDs)           │  │
+    │  │   (Generate numbered list for user selection)          │  │
     │  └──────────────────────┬────────────────────────────────┘  │
     │                         ↓                                    │
     │              [END - Awaiting User Selection]                 │
@@ -1126,22 +993,20 @@ def create_solution_workflow() -> StateGraph:
 
     workflow = StateGraph(SolutionState)
 
-    # Add 5 nodes (including thread init and Standards RAG enrichment)
-    workflow.add_node("init_thread_tree", initialize_thread_tree_node)  # NEW: Thread tree init
+    # Add 4 nodes (including Standards RAG enrichment)
     workflow.add_node("analyze_solution", analyze_solution_node)
     workflow.add_node("identify_instruments", identify_solution_instruments_node)
-    workflow.add_node("enrich_with_standards", enrich_solution_with_standards_node)
+    workflow.add_node("enrich_with_standards", enrich_solution_with_standards_node)  # NEW: Standards RAG
     workflow.add_node("format_list", format_solution_list_node)
 
-    # Set entry point - start with thread tree initialization
-    workflow.set_entry_point("init_thread_tree")
+    # Set entry point
+    workflow.set_entry_point("analyze_solution")
 
-    # Add edges - linear flow with thread init first
-    workflow.add_edge("init_thread_tree", "analyze_solution")  # NEW: Start with thread init
+    # Add edges - linear flow with Standards RAG enrichment
     workflow.add_edge("analyze_solution", "identify_instruments")
-    workflow.add_edge("identify_instruments", "enrich_with_standards")
-    workflow.add_edge("enrich_with_standards", "format_list")
-    workflow.add_edge("format_list", END)
+    workflow.add_edge("identify_instruments", "enrich_with_standards")  # NEW: Route to Standards RAG
+    workflow.add_edge("enrich_with_standards", "format_list")  # NEW: Then to formatting
+    workflow.add_edge("format_list", END)  # WORKFLOW ENDS HERE - waits for user selection
 
     return workflow
 
@@ -1150,19 +1015,14 @@ def create_solution_workflow() -> StateGraph:
 # WORKFLOW EXECUTION
 # =============================================================================
 
-@with_workflow_lock(session_id_param="workflow_thread_id", timeout=60.0)  # ✅ Lock by thread, not session
+@with_workflow_lock(session_id_param="session_id", timeout=60.0)
 def run_solution_workflow(
     user_input: str,
     session_id: str = "default",
-    checkpointing_backend: str = "memory",
-    main_thread_id: str = None,
-    workflow_thread_id: str = None,
-    zone: str = "DEFAULT"
+    checkpointing_backend: str = "memory"
 ) -> Dict[str, Any]:
     """
     Run the solution workflow.
-
-    ✅ UPDATED: Accepts UI-provided thread IDs
 
     This workflow analyzes solution descriptions and returns a selection list
     of identified instruments/accessories. It does NOT perform product search.
@@ -1171,9 +1031,6 @@ def run_solution_workflow(
         user_input: User's solution description (e.g., "I'm designing a crude oil distillation unit...")
         session_id: Session identifier
         checkpointing_backend: Backend for state persistence
-        main_thread_id: ✅ UI-provided main thread ID (format: main_*)
-        workflow_thread_id: ✅ UI-provided workflow thread ID
-        zone: Geographic zone (US-WEST, US-EAST, etc.)
 
     Returns:
         {
@@ -1201,21 +1058,8 @@ def run_solution_workflow(
         logger.info(f"[SOLUTION] Starting workflow for session: {session_id}")
         logger.info(f"[SOLUTION] User input: {user_input[:100]}...")
 
-        # ✅ CREATE INITIAL STATE WITH UI-PROVIDED THREAD IDS
+        # Create initial state
         initial_state = create_solution_state(user_input, session_id)
-
-        # ✅ ADD UI-PROVIDED THREAD IDS TO STATE (if provided)
-        if main_thread_id:
-            initial_state["main_thread_id"] = main_thread_id
-            logger.info(f"[SOLUTION] Using UI-provided main_thread_id: {main_thread_id}")
-
-        if workflow_thread_id:
-            initial_state["workflow_thread_id"] = workflow_thread_id
-            logger.info(f"[SOLUTION] Using UI-provided workflow_thread_id: {workflow_thread_id}")
-
-        if zone:
-            initial_state["zone"] = zone
-            logger.info(f"[SOLUTION] Using zone: {zone}")
 
         # Create and compile workflow
         workflow = create_solution_workflow()
@@ -1230,16 +1074,10 @@ def run_solution_workflow(
         logger.info(f"[SOLUTION] Workflow completed successfully")
         logger.info(f"[SOLUTION] Generated {result.get('total_items', 0)} items for selection")
 
-        # Include thread_info in response
-        response_data = result.get("response_data", {})
-        if result.get("thread_info"):
-            response_data["thread_info"] = result.get("thread_info")
-
         return {
             "success": True,
             "response": result.get("response", ""),
-            "response_data": response_data,
-            "thread_info": result.get("thread_info", {}),
+            "response_data": result.get("response_data", {}),
             "error": result.get("error")
         }
 

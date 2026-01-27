@@ -321,12 +321,30 @@ class StandardsChatAgent:
             search_results = self.retrieve_documents(question, top_k)
 
             if search_results.get('result_count', 0) == 0:
+                # ROOT CAUSE FIX: Provide actionable error message based on mock reason
+                mock_reason = search_results.get('mock_reason', None)
+
+                if mock_reason == 'MISSING_API_KEY':
+                    error_msg = (
+                        "Vector store is not properly configured: PINECONE_API_KEY environment variable is missing. "
+                        "Please set the PINECONE_API_KEY environment variable to enable document retrieval."
+                    )
+                    logger.error(f"[StandardsChatAgent] {error_msg}")
+                elif mock_reason and 'INIT_ERROR' in mock_reason:
+                    error_msg = (
+                        f"Vector store initialization failed ({mock_reason}). "
+                        "Please verify PINECONE_API_KEY is valid and the Pinecone index exists."
+                    )
+                    logger.error(f"[StandardsChatAgent] {error_msg}")
+                else:
+                    error_msg = "I don't have any relevant standards documents to answer this question."
+
                 return {
-                    'answer': "I don't have any relevant standards documents to answer this question.",
+                    'answer': error_msg,
                     'citations': [],
                     'confidence': 0.0,
                     'sources_used': [],
-                    'error': 'No documents found'
+                    'error': 'No documents found' if not mock_reason else f'Vector store unavailable: {mock_reason}'
                 }
 
             # Step 2: Build context

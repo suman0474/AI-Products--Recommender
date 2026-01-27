@@ -394,7 +394,7 @@ def cache_vendor_image(image_url: str, vendor_name: str) -> Optional[Dict[str, A
                 
                 # Return API path - NO leading /api prefix (frontend handles it)
                 return {
-                    "url": f"images/{blob_path}", 
+                    "url": f"/api/images/{blob_path}", 
                     "local_path": blob_path,
                     "storage": "azure"
                 }
@@ -416,7 +416,7 @@ def cache_vendor_image(image_url: str, vendor_name: str) -> Optional[Dict[str, A
                 
             # Return API path
             return {
-                "url": f"images/vendor_images/{filename}",
+                "url": f"/api/images/vendor_images/{filename}",
                 "local_path": filename,
                 "storage": "local"
             }

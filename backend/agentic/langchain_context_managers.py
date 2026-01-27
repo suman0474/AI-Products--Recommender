@@ -301,13 +301,14 @@ class LangChainLLMClientManager:
         self.error_count = 0
 
     def __enter__(self):
-        """Initialize LLM client"""
+        """Initialize LLM client with fallback support"""
         with self._lock:
             try:
-                self.llm_client = ChatGoogleGenerativeAI(
+                from llm_fallback import create_llm_with_fallback
+                self.llm_client = create_llm_with_fallback(
                     model=self.model_name,
                     timeout=self.timeout_seconds,
-                    max_retries=self.max_retries
+                    skip_test=True
                 )
                 self._is_active = True
                 logger.info(f"Initialized LangChain LLM client: {self.model_name}")

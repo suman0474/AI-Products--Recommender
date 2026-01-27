@@ -324,6 +324,16 @@ def validate_items_against_domain_standards(
             if item.get("enrichment_source") == "phase3_optimized":
                 total_specs_count = item.get("standards_info", {}).get("total_specs_count", 0)
 
+                # FIX #3: DEFENSIVE: Fallback counting if total_specs_count is not set
+                if total_specs_count == 0:
+                    combined_specs = item.get("combined_specifications", {})
+                    total_specs_count = len([v for v in combined_specs.values()
+                                            if v and str(v).lower() not in ["null", "none", ""]])
+                    logger.warning(
+                        f"[StandardsValidation] Fallback counting for '{item_name}': "
+                        f"standards_info.total_specs_count was 0, counted {total_specs_count} from combined_specifications"
+                    )
+
                 # CRITICAL: Verify specs meet minimum before skipping RAG
                 if total_specs_count >= MIN_STANDARDS_SPECS_COUNT:
                     logger.info(
@@ -356,6 +366,22 @@ def validate_items_against_domain_standards(
             if item.get("standards_specifications"):
                 total_specs_count = item.get("standards_info", {}).get("total_specs_count", 0)
                 cached_specs = item.get("standards_specifications", {})
+
+                # FIX #3: DEFENSIVE: Fallback counting if total_specs_count is not set
+                if total_specs_count == 0:
+                    # Try combined_specifications first (most reliable)
+                    combined_specs = item.get("combined_specifications", {})
+                    if combined_specs:
+                        total_specs_count = len([v for v in combined_specs.values()
+                                                if v and str(v).lower() not in ["null", "none", ""]])
+                    else:
+                        # Fallback to standards_specifications length
+                        total_specs_count = len([v for v in cached_specs.values()
+                                                if v and str(v).lower() not in ["null", "none", ""]])
+                    logger.warning(
+                        f"[StandardsValidation] Fallback counting for cached '{item_name}': "
+                        f"standards_info.total_specs_count was 0, counted {total_specs_count} from specs"
+                    )
 
                 # CRITICAL: Verify cached specs are sufficient
                 if total_specs_count >= MIN_STANDARDS_SPECS_COUNT:

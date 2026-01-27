@@ -135,45 +135,45 @@ def query_deep_agent(query: str, session_id: str) -> Dict[str, Any]:
 
 
 def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
-    """Use LLM directly for general questions."""
-    import time
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-                        import os
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-2.5-flash",
-                google_api_key=os.getenv("GOOGLE_API_KEY"),
-                temperature=0.3
-            )
-            
-            response = llm.invoke(query)
-            
-            return {
-                "success": True,
-                "source": "llm",
-                "answer": response.content if hasattr(response, 'content') else str(response),
-                "data": {}
-            }
-        except Exception as e:
-            error_str = str(e)
-            # Check if it's a rate limit error
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) * 5  # Exponential backoff: 5s, 10s, 20s
-                    logger.warning(f"[ORCHESTRATOR] Rate limit hit, retry {attempt+1}/{max_retries} after {wait_time}s")
-                    time.sleep(wait_time)
-                    continue
-            
-            logger.error(f"[ORCHESTRATOR] LLM fallback error: {e}")
-            return {
-                "success": False,
-                "source": "llm",
-                "error": str(e),
-                "answer": "I'm sorry, I couldn't process your request. Please try again."
-            }
+    """
+    Use LLM directly for general questions.
+
+    Uses create_llm_with_fallback for automatic key rotation and OpenAI fallback
+    on RESOURCE_EXHAUSTED errors.
+    """
+    try:
+        from llm_fallback import create_llm_with_fallback, invoke_with_retry_fallback
+
+        llm = create_llm_with_fallback(
+            model="gemini-2.5-flash",
+            temperature=0.3,
+            skip_test=True
+        )
+
+        # Use retry wrapper with automatic key rotation and OpenAI fallback
+        response = invoke_with_retry_fallback(
+            llm,
+            query,  # LLM accepts string directly
+            max_retries=3,
+            fallback_to_openai=True,
+            model="gemini-2.5-flash",
+            temperature=0.3
+        )
+
+        return {
+            "success": True,
+            "source": "llm",
+            "answer": response.content if hasattr(response, 'content') else str(response),
+            "data": {}
+        }
+    except Exception as e:
+        logger.error(f"[ORCHESTRATOR] LLM fallback error: {e}")
+        return {
+            "success": False,
+            "source": "llm",
+            "error": str(e),
+            "answer": "I'm sorry, I couldn't process your request. Please try again."
+        }
 
 
 def query_sources_parallel(
@@ -376,68 +376,103 @@ def run_engenie_chat_query(
 ) -> Dict[str, Any]:
     """
     Main entry point for EnGenie Chat queries.
-    
+
+    OPTIMIZED: Uses SEQUENTIAL LLM fallback instead of parallel to reduce API calls.
+    LLM is only called if RAG returns incomplete/empty answer.
+
     Handles:
     1. Memory resolution (follow-up detection)
     2. Intent classification
     3. Source selection
-    4. Parallel querying
+    4. Sequential querying (RAG first, then LLM if needed)
     5. Result merging
-    
+
     Args:
         query: User query
         session_id: Session ID for memory tracking
-        
+
     Returns:
         Unified response dict
     """
     logger.info(f"[ORCHESTRATOR] Processing query: {query[:100]}...")
-    
+
     # Step 1: Memory resolution
     is_follow_up = is_follow_up_query(query, session_id)
     resolved_query = query
-    
+
     if is_follow_up:
         logger.info(f"[ORCHESTRATOR] Detected follow-up query")
         resolved_query = resolve_follow_up(query, session_id)
-    
+
     # Step 2: Intent classification
     primary_source, confidence, reasoning = classify_query(resolved_query)
     logger.info(f"[ORCHESTRATOR] Classification: {primary_source.value} ({confidence:.2f}) - {reasoning}")
-    
+
     # Step 3: Determine sources to query
+    # OPTIMIZATION: Don't add LLM in parallel - use sequential fallback instead
     if primary_source == DataSource.HYBRID:
         sources = get_sources_for_hybrid(resolved_query)
+        # Remove LLM from hybrid sources - will use as fallback if needed
+        sources = [s for s in sources if s != DataSource.LLM]
     else:
         sources = [primary_source]
-    
-    # Always add LLM for Knowledge Questions (standards_rag)
-    # This ensures LLM provides complete information when RAG doesn't have it
-    if primary_source == DataSource.STANDARDS_RAG and DataSource.LLM not in sources:
-        sources.append(DataSource.LLM)
-        logger.info(f"[ORCHESTRATOR] Added LLM as parallel source for knowledge question")
-    
-    # Add LLM fallback if confidence is low (for other query types)
-    if confidence < 0.5 and DataSource.LLM not in sources:
-        sources.append(DataSource.LLM)
-        logger.info(f"[ORCHESTRATOR] Added LLM fallback due to low confidence")
-    
-    logger.info(f"[ORCHESTRATOR] Sources to query: {[s.value for s in sources]}")
-    
-    # Step 4: Query sources in parallel
+
+    # Don't add LLM as parallel source - it will be used as sequential fallback
+    logger.info(f"[ORCHESTRATOR] Primary sources to query: {[s.value for s in sources]}")
+
+    # Step 4: Query primary sources (without LLM)
     results = query_sources_parallel(resolved_query, sources, session_id)
-    
-    # Step 5: Merge results
+
+    # Step 5: Check if we need LLM fallback
+    # OPTIMIZATION: Only call LLM if RAG didn't provide a good answer
+    needs_llm_fallback = False
+    primary_answer = ""
+
+    primary_key = primary_source.value
+    if primary_key in results:
+        primary_result = results[primary_key]
+        if primary_result.get("success"):
+            primary_answer = primary_result.get("answer", "").strip()
+
+    # Patterns indicating incomplete answer that needs LLM help
+    INCOMPLETE_PATTERNS = [
+        "i don't have", "i do not have", "not available in",
+        "no information about", "cannot find", "no specific information",
+        "unable to find", "couldn't find"
+    ]
+
+    if not primary_answer:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] RAG returned empty answer - will use LLM fallback")
+    elif len(primary_answer) < 50:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] RAG answer too short ({len(primary_answer)} chars) - will use LLM fallback")
+    elif any(pattern in primary_answer.lower() for pattern in INCOMPLETE_PATTERNS):
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] RAG answer incomplete - will use LLM fallback")
+    elif confidence < 0.5:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] Low confidence ({confidence:.2f}) - will use LLM fallback")
+
+    # Step 5b: Query LLM only if needed (SEQUENTIAL, not parallel)
+    if needs_llm_fallback:
+        logger.info(f"[ORCHESTRATOR] Running LLM fallback sequentially...")
+        llm_result = query_llm_fallback(resolved_query, session_id)
+        results[DataSource.LLM.value] = llm_result
+    else:
+        logger.info(f"[ORCHESTRATOR] RAG answer sufficient - skipping LLM (saved 1 API call)")
+
+    # Step 6: Merge results
     merged = merge_results(results, primary_source)
-    
-    # Step 6: Save to memory
+
+    # Step 7: Save to memory
     add_to_history(
         session_id=session_id,
         query=query,
         response=merged.get("answer", ""),
         sources_used=merged.get("sources_used", [])
     )
-    
+
     # Add metadata
     merged["is_follow_up"] = is_follow_up
     merged["classification"] = {
@@ -445,5 +480,6 @@ def run_engenie_chat_query(
         "confidence": confidence,
         "reasoning": reasoning
     }
-    
+    merged["llm_fallback_used"] = needs_llm_fallback
+
     return merged

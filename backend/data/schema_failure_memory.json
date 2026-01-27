@@ -1140,6 +1140,20 @@
         "duration_ms": 55643,
         "sources_used": []
       }
+    ],
+    "Industrial instrument": [
+      {
+        "success_id": "succ_Industrial instrument_20260127134400229636",
+        "product_type": "Industrial instrument",
+        "prompt_hash": "b44e6b3d45afff37",
+        "prompt_preview": "[parallel generation]",
+        "fields_populated": 0,
+        "total_fields": 60,
+        "confidence_score": 0.0,
+        "timestamp": "2026-01-27T13:44:00.229658",
+        "duration_ms": 37204,
+        "sources_used": []
+      }
     ]
   },
   "optimized_prompts": {
@@ -1150,10 +1164,10 @@
   },
   "stats": {
     "total_failures": 37,
-    "total_successes": 38,
+    "total_successes": 39,
     "patterns_detected": 1,
     "recoveries_attempted": 0,
     "recoveries_successful": 0
   },
-  "saved_at": "2026-01-25T06:31:36.118781"
+  "saved_at": "2026-01-27T13:44:00.231344"
 }

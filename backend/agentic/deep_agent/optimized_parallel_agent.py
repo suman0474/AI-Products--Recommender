@@ -589,7 +589,10 @@ def run_optimized_parallel_enrichment(
     standards_specs_results = {}
     
     logger.info("[OPT_PARALLEL] Phase 3: Standards extraction...")
-    
+
+    # FIX #2: Store full combined_specifications from Step 5, not just standards_specifications
+    combined_specs_from_step5 = {}
+
     try:
         standards_result = run_standards_deep_agent_batch(
             items=items,
@@ -597,10 +600,21 @@ def run_optimized_parallel_enrichment(
             domain_context=domain_context,
             safety_requirements=safety_requirements
         )
-        
+
         if standards_result.get("success"):
             for enriched_item in standards_result.get("items", []):
                 item_name = enriched_item.get("name") or enriched_item.get("product_name", "Unknown")
+
+                # FIX #2: Extract full combined_specifications from Step 5
+                # This has already merged user + llm + standards specs
+                combined_from_step5 = enriched_item.get("combined_specifications", {})
+                combined_specs_from_step5[item_name] = combined_from_step5
+
+                step5_spec_count = len([v for v in combined_from_step5.values()
+                                       if v and str(v).lower() not in ["null", "none", ""]])
+                logger.info(f"[OPT_PARALLEL-PHASE3] Item '{item_name}': Step5 returned {step5_spec_count} combined specs")
+
+                # Also extract standards_specifications for fallback merge
                 raw_specs = enriched_item.get("standards_specifications", {})
                 normalized_specs = normalize_specification_output(raw_specs, preserve_ghost_values=False)
                 clean_specs = {k: v for k, v in normalized_specs.items() if not k.startswith('_')}
@@ -623,16 +637,24 @@ def run_optimized_parallel_enrichment(
     for item in items:
         item_name = item.get("name") or item.get("product_name", "Unknown")
         item_id = f"{session_id}_{item.get('number', 0)}_{item_name}"
-        
+
         user_specs = user_specs_results.get(item_name, {})
         llm_specs = llm_specs_results.get(item_name, {})
         standards_specs = standards_specs_results.get(item_name, {})
-        
-        merged_specs = deduplicate_and_merge_specifications(
-            user_specs=user_specs,
-            llm_specs=llm_specs,
-            standards_specs=standards_specs
-        )
+
+        # FIX #2: Use combined_specifications from Step 5 if available
+        # Step 5 already merged all 3 sources, don't re-merge
+        if item_name in combined_specs_from_step5:
+            merged_specs = combined_specs_from_step5[item_name]
+            logger.info(f"[OPT_PARALLEL-PHASE4] Using Step5 combined_specs for '{item_name}' ({len(merged_specs)} specs)")
+        else:
+            # Fallback: Item not processed by Step 5, perform manual merge
+            merged_specs = deduplicate_and_merge_specifications(
+                user_specs=user_specs,
+                llm_specs=llm_specs,
+                standards_specs=standards_specs
+            )
+            logger.info(f"[OPT_PARALLEL-PHASE4] Using fallback merge for '{item_name}' ({len(merged_specs)} specs)")
         
         # Create enrichment result
         enrichment_result: ParallelEnrichmentResult = {

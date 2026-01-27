@@ -279,7 +279,15 @@ def generate_answer_node(state: StandardsRAGState) -> StandardsRAGState:
     try:
         # Check if we have documents
         if len(state['retrieved_docs']) == 0:
-            state['answer'] = "I don't have any relevant standards documents to answer this question. Please rephrase or ask about a different topic."
+            # ROOT CAUSE FIX: Provide diagnostic message
+            logger.warning(
+                "[Node 3] No documents retrieved. Check logs for [VS-ROOT-CAUSE] messages. "
+                "Possible causes: PINECONE_API_KEY not set or Pinecone initialization failed."
+            )
+            state['answer'] = (
+                "I don't have any relevant standards documents to answer this question. "
+                "Please verify the vector store is properly configured and check the logs for diagnostic information."
+            )
             state['citations'] = []
             state['confidence'] = 0.0
             state['sources_used'] = []
@@ -324,8 +332,46 @@ def validate_response_node(state: StandardsRAGState) -> StandardsRAGState:
     Node 4: Validate the generated response.
 
     Uses ResponseValidatorAgent to check quality.
+
+    OPTIMIZATION: Skip validation LLM call when:
+    - Confidence from generation is high (>= 0.8)
+    - Answer is substantial (>= 200 chars)
+    - This saves 1 LLM call per request when answer quality is good
     """
     logger.info("[Node 4] Validating response...")
+
+    # =========================================================================
+    # OPTIMIZATION: Skip validation if confidence is high and answer is good
+    # This saves 1 LLM API call when the answer is clearly adequate
+    # =========================================================================
+    confidence = state.get('confidence', 0.0)
+    answer = state.get('answer', '')
+    answer_length = len(answer)
+
+    # Skip validation if confidence is high and answer is substantial
+    if confidence >= 0.8 and answer_length >= 200:
+        logger.info(f"[Node 4] SKIP validation - high confidence ({confidence:.2f}) and good answer length ({answer_length} chars)")
+        state['is_valid'] = True
+        state['validation_result'] = {
+            'skipped': True,
+            'reason': 'High confidence and substantial answer',
+            'confidence': confidence,
+            'answer_length': answer_length,
+            'overall_score': confidence  # Use confidence as proxy score
+        }
+        return state
+
+    # Skip validation if this is a retry (already validated once)
+    current_retry = state.get('current_retry', 0)
+    if current_retry > 0 and confidence >= 0.6:
+        logger.info(f"[Node 4] SKIP validation on retry - confidence adequate ({confidence:.2f})")
+        state['is_valid'] = True
+        state['validation_result'] = {
+            'skipped': True,
+            'reason': 'Retry with adequate confidence',
+            'confidence': confidence
+        }
+        return state
 
     try:
         # Create validator

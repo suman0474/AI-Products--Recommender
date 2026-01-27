@@ -28,6 +28,9 @@ import logging
 from functools import wraps
 from typing import Any, Optional, Dict
 from flask import jsonify
+import re
+import copy
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +64,6 @@ def api_response(
 
     Returns:
         Tuple of (Flask JSON response, status_code)
-
-    Examples:
-        # Success response
-        return api_response(True, data={'user': user_dict})
-
-        # Error response
-        return api_response(False, error="User not found", status_code=404)
-
-        # With tags (for frontend routing)
-        return api_response(True, data=result, tags=response_tags)
-
-        # With extra fields
-        return api_response(True, data=result, message="Operation completed")
     """
     response = {
         "success": success,
@@ -100,35 +90,6 @@ def api_response(
 def handle_errors(func=None, *, log_prefix: str = "API"):
     """
     Decorator for standardized error handling in API endpoints.
-
-    Catches all exceptions, logs them with full traceback,
-    and returns a standardized error response.
-
-    Can be used with or without arguments:
-        @handle_errors
-        def endpoint(): ...
-
-        @handle_errors(log_prefix="Session API")
-        def session_endpoint(): ...
-
-    Args:
-        func: The view function to wrap (when used without parentheses)
-        log_prefix: Prefix for log messages (default "API")
-
-    Returns:
-        Wrapped function with error handling
-
-    Example:
-        @app.route('/api/data')
-        @handle_errors
-        def get_data():
-            # If this raises, returns {"success": false, "error": "..."}, 500
-            return api_response(True, data=fetch_data())
-
-        @app.route('/api/session')
-        @handle_errors(log_prefix="Session API")
-        def session_endpoint():
-            return api_response(True, data=session_data())
     """
     def decorator(f):
         @wraps(f)
@@ -153,28 +114,11 @@ def handle_errors(func=None, *, log_prefix: str = "API"):
 def validate_request_json(required_fields: list = None, optional_fields: list = None):
     """
     Decorator to validate JSON request body.
-
-    Checks that request has JSON body and required fields are present.
-
-    Args:
-        required_fields: List of required field names
-        optional_fields: List of optional field names (for documentation)
-
-    Returns:
-        Decorator function
-
-    Example:
-        @app.route('/api/user', methods=['POST'])
-        @validate_request_json(required_fields=['name', 'email'])
-        def create_user():
-            data = request.get_json()
-            # data is guaranteed to have 'name' and 'email'
     """
-    from flask import request
-
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            from flask import request
             data = request.get_json()
 
             if not data:
@@ -201,25 +145,11 @@ def validate_request_json(required_fields: list = None, optional_fields: list = 
 def validate_query_params(required_params: list = None):
     """
     Decorator to validate query parameters.
-
-    Args:
-        required_params: List of required query parameter names
-
-    Returns:
-        Decorator function
-
-    Example:
-        @app.route('/api/search')
-        @validate_query_params(required_params=['q'])
-        def search():
-            query = request.args.get('q')
-            # query is guaranteed to exist
     """
-    from flask import request
-
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            from flask import request
             if required_params:
                 missing = [param for param in required_params if not request.args.get(param)]
                 if missing:
@@ -234,6 +164,87 @@ def validate_query_params(required_params: list = None):
     return decorator
 
 
+def convert_keys_to_camel_case(obj):
+    """Recursively converts dictionary keys from snake_case to camelCase."""
+    if isinstance(obj, dict):
+        new_dict = {}
+        for key, value in obj.items():
+            camel_key = re.sub(r'_([a-z])', lambda m: m.group(1).upper(), key)
+            new_dict[camel_key] = convert_keys_to_camel_case(value)
+        return new_dict
+    elif isinstance(obj, list):
+        return [convert_keys_to_camel_case(item) for item in obj]
+    return obj
+
+
+def clean_empty_values(data):
+    """Recursively replaces 'Not specified', etc., with empty strings."""
+    if isinstance(data, dict):
+        return {k: clean_empty_values(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [clean_empty_values(item) for item in data]
+    elif isinstance(data, str) and data.lower().strip() in ["not specified", "not requested", "none specified", "n/a", "na"]:
+        return ""
+    return data
+
+
+def map_provided_to_schema(detected_schema: dict, provided: dict) -> dict:
+    """Maps providedRequirements into the schema structure."""
+    if not isinstance(detected_schema, dict):
+        return {}
+    mapped = copy.deepcopy(detected_schema)
+    if not isinstance(provided, dict):
+        return mapped
+        
+    if "mandatoryRequirements" in provided or "optionalRequirements" in provided:
+        for section in ["mandatoryRequirements", "optionalRequirements"]:
+            if section in provided and section in mapped and isinstance(provided[section], dict):
+                for key, value in provided[section].items():
+                    if key in mapped[section]:
+                        mapped[section][key] = value
+        return mapped
+        
+    for key, value in provided.items():
+        if key in mapped.get("mandatoryRequirements", {}):
+            mapped["mandatoryRequirements"][key] = value
+        elif key in mapped.get("optionalRequirements", {}):
+            mapped["optionalRequirements"][key] = value
+    return mapped
+
+
+def get_missing_mandatory_fields(provided: dict, schema: dict) -> list:
+    """Identify missing mandatory fields by comparing provided data against schema."""
+    missing = []
+    if not isinstance(schema, dict) or not isinstance(provided, dict):
+        return missing
+        
+    mandatory_schema = schema.get("mandatoryRequirements", {})
+    provided_mandatory = provided.get("mandatoryRequirements", {})
+
+    def traverse_and_check(schema_node, provided_node):
+        if not isinstance(schema_node, dict):
+            return
+            
+        for key, schema_value in schema_node.items():
+            if isinstance(schema_value, dict):
+                traverse_and_check(schema_value, provided_node.get(key, {}) if isinstance(provided_node, dict) else {})
+            else:
+                provided_value = provided_node.get(key) if isinstance(provided_node, dict) else None
+                if provided_value is None or str(provided_value).strip() in ["", ","]:
+                    missing.append(key)
+
+    traverse_and_check(mandatory_schema, provided_mandatory)
+    return missing
+
+
+def friendly_field_name(field: str) -> str:
+    """Convert camelCase or snake_case field name to a human-friendly Title Case."""
+    if not field:
+        return ""
+    s1 = re.sub('([a-z0-9])([A-Z])', r'\1 \2', field)
+    return s1.replace("_", " ").title()
+
+
 # =============================================================================
 # EXPORTS
 # =============================================================================
@@ -242,5 +253,10 @@ __all__ = [
     'api_response',
     'handle_errors',
     'validate_request_json',
-    'validate_query_params'
+    'validate_query_params',
+    'convert_keys_to_camel_case',
+    'clean_empty_values',
+    'map_provided_to_schema',
+    'get_missing_mandatory_fields',
+    'friendly_field_name'
 ]

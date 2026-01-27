@@ -49,7 +49,6 @@ from langchain_core.output_parsers import StrOutputParser
 from chaining import setup_langchain_components, create_analysis_chain
 import prompts  # Using compatibility shim (prompts.py) - TODO: Refactor to use sales_agent_tools.py
 from loading import load_requirements_schema, build_requirements_schema_from_web
-from flask import Flask, session
 from flask_session import Session
 
 # Import latest advanced specifications functionality
@@ -59,70 +58,7 @@ from advanced_parameters import discover_advanced_parameters
 # Import Azure Blob utilities
 from azure_blob_utils import azure_blob_file_manager
 
-# Import Swagger/Flasgger for API documentation
-from flasgger import Swagger, swag_from
 
-# Swagger/OpenAPI Configuration
-swagger_template = {
-    "swagger": "2.0",
-    "info": {
-        "title": "AI Product Recommender API",
-        "description": "A comprehensive API for AI-powered product recommendations, vendor analysis, and intelligent procurement assistance. This API provides endpoints for product requirement analysis, vendor comparison, and workflow-based product selection.",
-        "version": "1.0.0",
-        "contact": {
-            "name": "AI Product Recommender Team",
-            "email": "support@aiproductrecommender.com"
-        },
-        "license": {
-            "name": "Proprietary",
-            "url": "https://aiproductrecommender.com/license"
-        }
-    },
-    "host": "",  # Will be set dynamically
-    "basePath": "/",
-    "schemes": ["http", "https"],
-    "securityDefinitions": {
-        "session": {
-            "type": "apiKey",
-            "name": "session",
-            "in": "cookie",
-            "description": "Session-based authentication. Login via /login endpoint first."
-        }
-    },
-    "security": [{"session": []}],
-    "tags": [
-        {"name": "Authentication", "description": "User authentication and session management"},
-        {"name": "Health", "description": "API health check endpoints"},
-        {"name": "Workflow", "description": "AI-powered product selection workflow"},
-        {"name": "Products", "description": "Product analysis and recommendations"},
-        {"name": "Vendors", "description": "Vendor search and analysis"},
-        {"name": "Projects", "description": "Project management and persistence"},
-        {"name": "Files", "description": "File upload and document processing"},
-        {"name": "Images", "description": "Image serving and product images"},
-        {"name": "Admin", "description": "Administrative operations"},
-        {"name": "Standardization", "description": "Data standardization utilities"},
-        {"name": "LangChain Tools", "description": "Direct testing of individual LangChain tools (16 tools)"},
-        {"name": "LangChain Agents", "description": "Direct access to 9 LangChain agents with LangGraph ReAct pattern"},
-        {"name": "Agentic Workflows", "description": "Base agentic AI workflows including chat and identification"},
-        {"name": "Enhanced Workflows", "description": "Advanced multi-step workflows: Solution, Comparison, Detail Capture, PPI"},
-        {"name": "Chat & Q&A", "description": "Grounded knowledge chat and Q&A endpoints"}
-    ]
-}
-
-swagger_config = {
-    "headers": [],
-    "specs": [
-        {
-            "endpoint": "apispec",
-            "route": "/apispec.json",
-            "rule_filter": lambda rule: True,
-            "model_filter": lambda tag: True,
-        }
-    ],
-    "static_url_path": "/flasgger_static",
-    "swagger_ui": True,
-    "specs_route": "/apidocs/"
-}
 # MongoDB Project Management imports removed
 
 
@@ -158,7 +94,6 @@ if os.environ.get("VERCEL") == "1":
 # Replace your old CORS line with this one
 CORS(app, origins=allowed_origins, supports_credentials=True)
 logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.INFO)
 
 if os.getenv('FLASK_ENV') == 'production' or os.getenv('RAILWAY_ENVIRONMENT'):
     # Production session settings
@@ -181,8 +116,11 @@ app.secret_key = os.getenv('SECRET_KEY', 'fallback-secret-key-for-development')
 Session(app)
 db.init_app(app)
 
-# Initialize Swagger/Flasgger for API documentation
-swagger = Swagger(app, template=swagger_template, config=swagger_config)
+
+
+# --- Authentication Decorators ---
+from agentic.auth_decorators import login_required, admin_required
+logging.info("Authentication decorators imported")
 
 # --- Initialize Rate Limiting ---
 from rate_limiter import init_limiter
@@ -196,8 +134,8 @@ logging.info("Agentic workflow blueprint registered at /api/agentic")
 
 # --- Import and Register Deep Agent Blueprint ---
 from agentic.deep_agent.api import deep_agent_bp
-app.register_blueprint(deep_agent_bp)
-logging.info("Deep Agent blueprint registered at /deep-agent")
+app.register_blueprint(deep_agent_bp, url_prefix='/api')
+logging.info("Deep Agent blueprint registered at /api/deep-agent")
 
 # --- Import and Register EnGenie Chat API Blueprint ---
 from agentic.engenie_chat.engenie_chat_api import engenie_chat_bp
@@ -205,9 +143,8 @@ app.register_blueprint(engenie_chat_bp)
 logging.info("EnGenie Chat API blueprint registered at /api/engenie-chat")
 
 # --- Import and Register Tools API Blueprint ---
-# --- Import and Register Tools API Blueprint ---
 from tools_api import tools_bp
-app.register_blueprint(tools_bp)
+app.register_blueprint(tools_bp, url_prefix='/api/tools')
 logging.info("Tools API blueprint registered at /api/tools")
 
 
@@ -216,6 +153,15 @@ from agentic.session_api import register_session_blueprints
 register_session_blueprints(app)
 logging.info("Session and Instance blueprints registered")
 
+
+# LangChain and Utility Imports
+from agentic.api_utils import (
+    convert_keys_to_camel_case, 
+    clean_empty_values, 
+    map_provided_to_schema,
+    get_missing_mandatory_fields,
+    friendly_field_name
+)
 
 # =========================================================================
 # === HELPER FUNCTIONS AND UTILITIES ===
@@ -245,7 +191,8 @@ from standardization_utils import (
     standardize_product_image_mapping,
     create_standardization_report,
     update_existing_vendor_files_with_standardization,
-    standardize_vendor_name
+    standardize_vendor_name,
+    standardized_jsonify
 )
 
 # Initialize LangChain components
@@ -258,93 +205,6 @@ except Exception as e:
     logging.error(f"Initialization failed: {e}")
     components = None
     analysis_chain = None
-
-def convert_keys_to_camel_case(obj):
-    """Recursively converts dictionary keys from snake_case to camelCase."""
-    if isinstance(obj, dict):
-        new_dict = {}
-        for key, value in obj.items():
-            camel_key = re.sub(r'_([a-z])', lambda m: m.group(1).upper(), key)
-            new_dict[camel_key] = convert_keys_to_camel_case(value)
-        return new_dict
-    elif isinstance(obj, list):
-        return [convert_keys_to_camel_case(item) for item in obj]
-    return obj
-
-def apply_standardization_to_response(data):
-    """
-    Apply appropriate standardization to response data based on its content.
-    This function detects the type of data and applies the correct standardization.
-    Only applies LLM-based standardization for critical analysis endpoints.
-    """
-    if not isinstance(data, dict):
-        return data
-    
-    try:
-        # Only apply LLM-based standardization for analysis results
-        # Skip for basic endpoints like /vendors to prevent connection issues
-        
-        # For nested dictionaries, apply standardization recursively to relevant parts
-        standardized = data.copy()
-        for key, value in data.items():
-            if key in ["vendor_analysis", "vendorAnalysis"] and isinstance(value, dict):
-                try:
-                    standardized[key] = standardize_vendor_analysis_result(value)
-                except Exception as e:
-                    logging.warning(f"Failed to standardize vendor analysis: {e}")
-                    standardized[key] = value
-            elif key in ["overall_ranking", "overallRanking", "ranking"] and isinstance(value, dict):
-                try:
-                    standardized[key] = standardize_ranking_result(value)
-                except Exception as e:
-                    logging.warning(f"Failed to standardize ranking: {e}")
-                    standardized[key] = value
-            elif key in ["vendors"] and isinstance(value, list):
-                # Apply basic vendor name standardization only
-                standardized_vendors = []
-                for vendor in value:
-                    if isinstance(vendor, dict) and "name" in vendor:
-                        vendor_copy = vendor.copy()
-                        try:
-                            vendor_copy["name"] = standardize_vendor_name(vendor.get("name", ""))
-                        except Exception as e:
-                            logging.warning(f"Failed to standardize vendor name: {e}")
-                            vendor_copy["name"] = vendor.get("name", "")
-                        standardized_vendors.append(vendor_copy)
-                    else:
-                        standardized_vendors.append(vendor)
-                standardized[key] = standardized_vendors
-        return standardized
-    
-    except Exception as e:
-        logging.warning(f"Standardization failed for response data: {e}")
-        return data
-    
-    return data
-
-def standardized_jsonify(data, status_code=200):
-    """
-    Enhanced jsonify function that applies standardization before converting to camelCase.
-    Use this instead of jsonify() for responses containing vendor/product data.
-    """
-    try:
-        # Apply standardization first (with timeout protection)
-        standardized_data = apply_standardization_to_response(data)
-        
-        # Then convert to camelCase for frontend compatibility
-        camel_case_data = convert_keys_to_camel_case(standardized_data)
-        
-        return jsonify(camel_case_data), status_code
-    except Exception as e:
-        logging.error(f"Failed to apply standardization in jsonify wrapper: {e}")
-        # Fallback to regular conversion if standardization fails
-        try:
-            camel_case_data = convert_keys_to_camel_case(data)
-            return jsonify(camel_case_data), status_code
-        except Exception as fallback_error:
-            logging.error(f"Even fallback conversion failed: {fallback_error}")
-            # Last resort: return data as-is
-            return jsonify(data), status_code
 
 def prettify_req(req):
     return req.replace('_', ' ').replace('-', ' ').title()
@@ -359,14 +219,9 @@ def flatten_schema(schema_dict):
             flat[k] = v
     return flat
 
-def login_required(func):
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({"error": "Unauthorized: Please log in"}), 401
-        return func(*args, **kwargs)
-    return decorated_function
 
+# Use imported login_required instead of local definition
+# ALLOWED_EXTENSIONS moved to top-level if needed, but keeping one here for clarity if only used once
 ALLOWED_EXTENSIONS = {"pdf"}
 
 def allowed_file(filename: str):
@@ -390,21 +245,30 @@ def allowed_file(filename: str):
 #     pass
 # =============================================================================
 
-# Import the intent tool for the new wrapper API
-from tools.intent_tools import classify_intent_tool
+# IntentClassificationRoutingAgent handles intent classification and workflow routing
+# It internally uses classify_intent_tool with additional features:
+# - Workflow state locking
+# - Exit phrase detection
+# - Metrics-based complexity detection
+# - Intelligent routing decisions
 
 @app.route("/api/intent", methods=["POST"])
 @login_required
 def api_intent():
     """
-    Classify user intent and determine workflow step (Wrapper for classify_intent_tool)
+    Classify user intent and route to appropriate workflow
     ---
     tags:
       - Workflow
-    summary: Classify user intent
+    summary: Classify user intent and route to workflow
     description: |
-      Classifies user intent and determines the next workflow step based on input and current session state.
-      This endpoint wraps the classify_intent_tool from intent_tools.py for consistent classification.
+      Uses IntentClassificationRoutingAgent for intelligent intent classification and workflow routing.
+
+      **Features:**
+      - Workflow state locking (keeps user in current workflow until exit)
+      - Exit phrase detection ("start over", "reset", etc.)
+      - Metrics-based complexity detection for solution vs single-product
+      - LLM-based intent classification with retry and fallback
       
       **Intent Types:**
       - `greeting` - Initial greeting
@@ -503,212 +367,221 @@ def api_intent():
         return jsonify(response), 200
     
     # =========================================================================
-    # USE WorkflowStateMemory FROM IntentClassificationRoutingAgent
-    # This is the SINGLE SOURCE OF TRUTH for workflow state (stored in backend)
+    # USE IntentClassificationRoutingAgent FOR COMPLETE ROUTING
+    # This agent handles:
+    # - Workflow state locking (single source of truth)
+    # - Exit phrase detection
+    # - Metrics-based complexity detection
+    # - LLM-based intent classification
+    # - Workflow routing decisions
     # =========================================================================
     from agentic.intent_classification_routing_agent import (
-        get_workflow_memory, 
-        should_exit_workflow,
-        is_knowledge_question,  # NEW: Detect knowledge questions
-        EXIT_PHRASES,
-        GREETING_PHRASES
+        IntentClassificationRoutingAgent,
+        WorkflowTarget,
+        get_workflow_memory
     )
-    
-    workflow_memory = get_workflow_memory()
-    
-    # Check if user wants to exit workflow
-    wants_to_exit = should_exit_workflow(user_input)
-    
-    # NEW: Check if user is asking a knowledge question (should break workflow lock)
-    is_knowledge_q = is_knowledge_question(user_input)
-    
-    # If user wants to exit OR is asking a knowledge question, clear workflow state
-    if wants_to_exit or is_knowledge_q:
-        workflow_memory.clear_workflow(search_session_id)
-        if is_knowledge_q:
-            logging.info(f"[INTENT_API] Clearing workflow state - detected KNOWLEDGE QUESTION: {user_input[:50]}...")
-        else:
-            logging.info(f"[INTENT_API] Clearing workflow state - user requested exit")
-    
-    # Check WORKFLOW LOCK from backend memory (single source of truth)
-    current_workflow = workflow_memory.get_workflow(search_session_id)
-    
-    if current_workflow and not wants_to_exit and not is_knowledge_q:
-        logging.info(f"[INTENT_API] WORKFLOW LOCK: User is in '{current_workflow}' workflow - staying in workflow")
-        
-        # Map workflow to intent
-        workflow_to_intent = {
-            "engenie_chat": "knowledgeQuestion",
-            "productInfo": "knowledgeQuestion", 
-            "index_rag": "knowledgeQuestion",
-            "instrument_identifier": "productRequirements",
-            "solution": "solution"
-        }
-        
-        locked_intent = workflow_to_intent.get(current_workflow, current_workflow)
-        
-        result_json = {
-            "intent": locked_intent,
-            "nextStep": None,
-            "resumeWorkflow": True,
-            "confidence": 1.0,
-            "isSolution": current_workflow == "solution",
-            "extractedInfo": {},
-            "solutionIndicators": [],
-            "workflowLocked": True,
-            "currentWorkflow": current_workflow
-        }
-        
-        logging.info(f"[INTENT_API] Workflow locked response: {result_json}")
-        return jsonify(result_json), 200
 
     try:
-        # =====================================================================
-        # CALL classify_intent_tool from intent_tools.py
-        # This is the centralized intent classification tool
-        # =====================================================================
-        logging.info(f"[INTENT_API] Calling classify_intent_tool for input: {user_input[:100]}...")
-        
-        # Build context from session state
-        context = f"Current step: {current_step or 'None'}, Current intent: {current_intent or 'None'}, Current workflow: {current_workflow or 'None'}"
-        
-        # Invoke the classify_intent_tool
-        tool_result = classify_intent_tool.invoke({
-            "user_input": user_input,
+        # Create routing agent instance
+        routing_agent = IntentClassificationRoutingAgent(name="API_IntentRouter")
+
+        # Build context for the agent
+        context = {
             "current_step": current_step,
-            "context": context
-        })
-        
-        logging.info(f"[INTENT_API] classify_intent_tool result: {tool_result}")
-        
-        if not tool_result.get("success"):
-            # Tool failed, return error
+            "current_intent": current_intent,
+            "context": f"Current step: {current_step or 'None'}, Current intent: {current_intent or 'None'}"
+        }
+
+        logging.info(f"[INTENT_API] Calling IntentClassificationRoutingAgent for: {user_input[:100]}...")
+
+        # Call the routing agent - handles EVERYTHING internally:
+        # - Exit detection
+        # - Workflow locking
+        # - Metrics extraction
+        # - LLM classification via classify_intent_tool
+        # - Routing decision
+        routing_result = routing_agent.classify(
+            query=user_input,
+            session_id=search_session_id,
+            context=context
+        )
+
+        logging.info(f"[INTENT_API] Routing result: {routing_result.target_workflow.value} (intent={routing_result.intent}, conf={routing_result.confidence:.2f})")
+
+        # Check for classification errors
+        if routing_result.intent == "error":
+            error_msg = routing_result.reasoning
+
+            # Check if it's a rate limit / quota error (external service issue)
+            is_external_error = any(x in str(error_msg) for x in [
+                'RESOURCE_EXHAUSTED', 'quota', '429', 'Rate limit', 'overloaded', '503'
+            ])
+
+            if is_external_error:
+                logging.warning(f"[INTENT_API] External service error: {error_msg}")
+                return jsonify({
+                    "error": "Service temporarily unavailable. Please retry.",
+                    "intent": "other",
+                    "nextStep": None,
+                    "resumeWorkflow": False,
+                    "retryAfter": 30,
+                    "serviceError": True
+                }), 503
+
             return jsonify({
-                "error": tool_result.get("error", "Intent classification failed"),
+                "error": error_msg,
                 "intent": "other",
                 "nextStep": None,
                 "resumeWorkflow": False
             }), 500
-        
-        # Map tool result to API response format
-        intent = tool_result.get("intent", "other")
-        is_solution = tool_result.get("is_solution", False)
-        confidence = tool_result.get("confidence", 0.5)
-        next_step = tool_result.get("next_step")
-        
-        # Map intent types to frontend expected values
-        intent_mapping = {
-            "greeting": "greeting",
-            "solution": "solution",
-            "requirements": "productRequirements",
-            "question": "knowledgeQuestion",
-            "additional_specs": "workflow",
-            "confirm": "workflow",
-            "reject": "workflow",
-            "chitchat": "chitchat",
-            "unrelated": "other"
+
+        # Map WorkflowTarget to frontend expected values
+        target_to_intent = {
+            WorkflowTarget.SOLUTION_WORKFLOW: "solution",
+            WorkflowTarget.INSTRUMENT_IDENTIFIER: "productRequirements",
+            WorkflowTarget.PRODUCT_INFO: "knowledgeQuestion",
+            WorkflowTarget.OUT_OF_DOMAIN: "other"
         }
-        
-        mapped_intent = intent_mapping.get(intent, intent)
-        
-        # Determine next step and workflow based on intent
-        suggest_workflow = None  # For suggesting workflows without auto-routing
-        
-        if mapped_intent == "greeting":
+
+        # Handle special intents that don't map directly from target
+        if routing_result.intent == "greeting":
+            mapped_intent = "greeting"
+        elif routing_result.intent == "workflow_locked":
+            # Use the locked workflow's intent
+            workflow_memory = get_workflow_memory()
+            current_workflow = workflow_memory.get_workflow(search_session_id)
+            workflow_to_intent = {
+                "engenie_chat": "knowledgeQuestion",
+                "product_info": "knowledgeQuestion",
+                "instrument_identifier": "productRequirements",
+                "solution": "solution"
+            }
+            mapped_intent = workflow_to_intent.get(current_workflow, "knowledgeQuestion")
+        elif routing_result.intent in ["confirm", "reject", "additional_specs"]:
+            mapped_intent = "workflow"
+        elif routing_result.intent == "chitchat":
+            mapped_intent = "chitchat"
+        else:
+            mapped_intent = target_to_intent.get(routing_result.target_workflow, "other")
+
+        # Determine next step based on target workflow
+        target_to_next_step = {
+            WorkflowTarget.SOLUTION_WORKFLOW: "solutionWorkflow",
+            WorkflowTarget.INSTRUMENT_IDENTIFIER: "initialInput",
+            WorkflowTarget.PRODUCT_INFO: None,  # EnGenie Chat handles its own routing
+            WorkflowTarget.OUT_OF_DOMAIN: None
+        }
+
+        if routing_result.intent == "greeting":
             next_step = "greeting"
-            resume_workflow = False
+        else:
+            next_step = target_to_next_step.get(routing_result.target_workflow)
+
+        # Determine workflow name for session tracking
+        target_to_workflow_name = {
+            WorkflowTarget.SOLUTION_WORKFLOW: "solution",
+            WorkflowTarget.INSTRUMENT_IDENTIFIER: "instrument_identifier",
+            WorkflowTarget.PRODUCT_INFO: "engenie_chat",
+            WorkflowTarget.OUT_OF_DOMAIN: None
+        }
+
+        new_workflow = target_to_workflow_name.get(routing_result.target_workflow)
+        if routing_result.intent == "greeting":
             new_workflow = None  # Clear workflow on greeting
-        elif mapped_intent == "solution" or is_solution:
-            mapped_intent = "solution"
-            next_step = "solutionWorkflow"
+
+        # Check if workflow is locked (already set by routing agent)
+        workflow_memory = get_workflow_memory()
+        is_workflow_locked = routing_result.extracted_info.get("workflow_locked", False)
+
+        # Determine resume_workflow flag
+        if is_workflow_locked:
+            resume_workflow = True
+        elif routing_result.intent in ["confirm", "reject", "additional_specs"]:
+            resume_workflow = True
+        else:
             resume_workflow = False
-            is_solution = True
-            new_workflow = "solution"
-        elif mapped_intent == "productRequirements":
-            next_step = "initialInput"
-            resume_workflow = False
-            new_workflow = "instrument_identifier"
-        elif mapped_intent == "knowledgeQuestion":
-            # DON'T auto-route to EnGenie Chat - suggest it instead
-            next_step = None
-            resume_workflow = False
-            new_workflow = None  # Don't set workflow yet
+
+        # Build suggestion for knowledge questions (don't auto-route)
+        suggest_workflow = None
+        if routing_result.target_workflow == WorkflowTarget.PRODUCT_INFO and not is_workflow_locked:
             suggest_workflow = {
                 "name": "EnGenie Chat",
                 "workflow_id": "engenie_chat",
                 "description": "Get answers about products, standards, and industrial topics",
                 "action": "openEnGenieChat"
             }
-            logging.info(f"[INTENT_API] Suggesting EnGenie Chat workflow instead of auto-routing")
-        elif mapped_intent == "workflow":
-            resume_workflow = True
-            new_workflow = current_workflow  # Keep current workflow
-        else:
-            resume_workflow = False
-            new_workflow = None  # Don't auto-set workflow
+            logging.info("[INTENT_API] Suggesting EnGenie Chat workflow")
+        elif routing_result.target_workflow == WorkflowTarget.OUT_OF_DOMAIN:
             suggest_workflow = {
                 "name": "EnGenie Chat",
-                "workflow_id": "engenie_chat", 
+                "workflow_id": "engenie_chat",
                 "description": "Get answers about products, standards, and industrial topics",
                 "action": "openEnGenieChat"
             }
-        
+
         # Build response
         result_json = {
             "intent": mapped_intent,
             "nextStep": next_step,
             "resumeWorkflow": resume_workflow,
-            "confidence": confidence,
-            "isSolution": is_solution,
-            "extractedInfo": tool_result.get("extracted_info", {}),
-            "solutionIndicators": tool_result.get("solution_indicators", []),
+            "confidence": routing_result.confidence,
+            "isSolution": routing_result.is_solution,
+            "extractedInfo": routing_result.extracted_info,
+            "solutionIndicators": routing_result.solution_indicators,
             "currentWorkflow": new_workflow,
-            "suggestWorkflow": suggest_workflow  # Suggestion for UI to display
+            "suggestWorkflow": suggest_workflow,
+            "workflowLocked": is_workflow_locked,
+            "routingReasoning": routing_result.reasoning  # Include reasoning for debugging
         }
-        
-        # Update session based on classification
-        # Use WorkflowStateMemory for workflow state (single source of truth)
+
+        # Add reject message for out-of-domain queries
+        if routing_result.reject_message:
+            result_json["rejectMessage"] = routing_result.reject_message
+
+        # Update Flask session state for backward compatibility
         if mapped_intent == "greeting":
             session[f'current_step_{search_session_id}'] = 'greeting'
             session[f'current_intent_{search_session_id}'] = 'greeting'
-            workflow_memory.clear_workflow(search_session_id)  # Clear workflow on greeting
-        elif mapped_intent == "solution" or is_solution:
+        elif mapped_intent == "solution" or routing_result.is_solution:
             session[f'current_step_{search_session_id}'] = 'solutionWorkflow'
             session[f'current_intent_{search_session_id}'] = 'solution'
-            workflow_memory.set_workflow(search_session_id, 'solution')
             logging.info("[SOLUTION_ROUTING] Detected solution/engineering challenge - routing to solution workflow")
         elif mapped_intent == "productRequirements":
             session[f'current_step_{search_session_id}'] = 'initialInput'
             session[f'current_intent_{search_session_id}'] = 'productRequirements'
-            workflow_memory.set_workflow(search_session_id, 'instrument_identifier')
         elif mapped_intent == "knowledgeQuestion":
             session[f'current_intent_{search_session_id}'] = 'knowledgeQuestion'
-            workflow_memory.set_workflow(search_session_id, 'engenie_chat')
         elif mapped_intent == "workflow" and next_step:
             session[f'current_step_{search_session_id}'] = next_step
             session[f'current_intent_{search_session_id}'] = 'workflow'
-        
-        logging.info(f"[INTENT_API] Final response: {result_json}")
-        logging.info(f"[INTENT_API] Workflow set to: {workflow_memory.get_workflow(search_session_id)}")
+
+        # Log metrics if available
+        system_metrics = routing_result.extracted_info.get("system_metrics", {})
+        if system_metrics:
+            logging.info(f"[INTENT_API] System complexity: score={system_metrics.get('complexity_score', 0)}, "
+                        f"instruments={system_metrics.get('estimated_instruments', 0)}, "
+                        f"is_complex={system_metrics.get('is_complex_system', False)}")
+
+        logging.info(f"[INTENT_API] Final response: intent={mapped_intent}, workflow={new_workflow}, locked={is_workflow_locked}")
         return jsonify(result_json), 200
 
     except Exception as e:
         error_msg = str(e)
         logging.exception("[INTENT_API] Intent classification failed.")
-        
+
         # Return 503 for rate limit errors (temporary condition), 500 for other errors
         is_rate_limit = any(x in error_msg for x in ['429', 'Resource exhausted', 'RESOURCE_EXHAUSTED', 'quota'])
         status_code = 503 if is_rate_limit else 500
-        
+
         return jsonify({
-            "error": error_msg, 
-            "intent": "other", 
-            "nextStep": None, 
+            "error": error_msg,
+            "intent": "other",
+            "nextStep": None,
             "resumeWorkflow": False,
             "retryable": is_rate_limit
         }), status_code
 
-@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def health_check():
     """
     API Health Check
@@ -742,6 +615,7 @@ def health_check():
         "workflow_initialized": False,
         "langsmith_enabled": False
     }, 200
+
 
 # =========================================================================
 # === IMAGE SERVING ENDPOINT (Azure Blob Storage Primary)
@@ -788,11 +662,11 @@ def serve_image(file_id):
         description: Internal server error
     """
     try:
-        from azure_blob_config import azure_blob_manager, is_azure_blob_available
+        from azure_blob_config import azure_blob_manager
         import os
         
         # Check if Azure Blob Storage is available
-        if not is_azure_blob_available():
+        if not azure_blob_manager.is_available:
             logging.error(f"Azure Blob Storage is not available for serving image: {file_id}")
             return jsonify({"error": "Image storage service unavailable"}), 503
         
@@ -937,16 +811,6 @@ def serve_image_root(file_id):
 
     return jsonify({"error": "Not found"}), 404
 
-# =============================================================================
-# IMAGE SERVING - LOCAL FALLBACK
-# =============================================================================
-@app.route('/api/images/generic/<path:filename>')
-def serve_generic_images(filename):
-    """Serve generic images from local storage (fallback for Azure)."""
-    full_path = os.path.join(app.root_path, 'static', 'images', 'generic_images', filename)
-    if not os.path.exists(full_path):
-        return jsonify({"error": "Image not found", "path": full_path}), 404
-    return send_file(full_path)
 
 @app.route('/api/generic_image/<product_type>', methods=['GET'])
 @login_required
@@ -1996,7 +1860,8 @@ def identify_instruments():
             greeting_chain = prompts.identify_greeting_prompt | components['llm'] | StrOutputParser()
             greeting_response = greeting_chain.invoke({"user_input": requirements})
             
-            from testing_utils import standardized_jsonify
+            # from testing_utils import standardized_jsonify # Removed
+
             return standardized_jsonify({
                 "response_type": "greeting",
                 "message": greeting_response.strip(),
@@ -2072,7 +1937,8 @@ def identify_instruments():
             unrelated_chain = prompts.identify_unrelated_prompt | components['llm'] | StrOutputParser()
             unrelated_response = unrelated_chain.invoke({"reasoning": reasoning})
             
-            from testing_utils import standardized_jsonify
+            # from testing_utils import standardized_jsonify # Removed
+
             return standardized_jsonify({
                 "response_type": "question",  # Use "question" type for frontend compatibility
                 "is_industrial": False,
@@ -4286,41 +4152,7 @@ def get_current_user():
         }
     }), 200
 
-def clean_empty_values(data):
-    """Recursively replaces 'Not specified', 'Not requested', etc., with empty strings."""
-    if isinstance(data, dict):
-        return {k: clean_empty_values(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [clean_empty_values(item) for item in data]
-    elif isinstance(data, str) and data.lower().strip() in ["not specified", "not requested", "none specified", "n/a", "na"]:
-        return ""
-    return data
-import copy
 
-def map_provided_to_schema(detected_schema: dict, provided: dict) -> dict:
-    """
-    Always maps providedRequirements (flat or nested) into the schema structure.
-    Works dynamically for any product type (Humidity, Pressure, etc.).
-    """
-    mapped = copy.deepcopy(detected_schema)
-
-    # Case 1: Provided already structured (mandatory/optional) → overlay values
-    if "mandatoryRequirements" in provided or "optionalRequirements" in provided:
-        for section in ["mandatoryRequirements", "optionalRequirements"]:
-            if section in provided and section in mapped:
-                for key, value in provided[section].items():
-                    if key in mapped[section]:
-                        mapped[section][key] = value
-        return mapped
-
-    # Case 2: Provided is flat dict → distribute into schema
-    for key, value in provided.items():
-        if key in mapped.get("mandatoryRequirements", {}):
-            mapped["mandatoryRequirements"][key] = value
-        elif key in mapped.get("optionalRequirements", {}):
-            mapped["optionalRequirements"][key] = value
-
-    return mapped
 
 # =========================================================================
 # === PROGRESS TRACKING ENDPOINT ===
@@ -4395,7 +4227,7 @@ def clear_session_state(session_id):
 
 
 
-@app.route("/validate", methods=["POST"])
+@app.route("/api/validate", methods=["POST"])
 @login_required
 def api_validate():
     if not components:
@@ -4479,32 +4311,14 @@ def api_validate():
         }
 
         # ---------------- Helpers for missing mandatory fields ----------------
-        def get_missing_mandatory_fields(provided: dict, schema: dict) -> list:
-            missing = []
-            mandatory_schema = schema.get("mandatoryRequirements", {})
-            provided_mandatory = provided.get("mandatoryRequirements", {})
 
-            def traverse_and_check(schema_node, provided_node):
-                for key, schema_value in schema_node.items():
-                    if isinstance(schema_value, dict):
-                        traverse_and_check(schema_value, provided_node.get(key, {}) if isinstance(provided_node, dict) else {})
-                    else:
-                        provided_value = provided_node.get(key) if isinstance(provided_node, dict) else None
-                        if provided_value is None or str(provided_value).strip() in ["", ","]:
-                            missing.append(key)
-
-            traverse_and_check(mandatory_schema, provided_mandatory)
-            return missing
 
         missing_mandatory_fields = get_missing_mandatory_fields(
             mapped_provided_reqs, response_data["detectedSchema"]
         )
 
         # ---------------- Helper: Convert camelCase to friendly label ----------------
-        def friendly_field_name(field):
-            import re
-            s1 = re.sub('([a-z0-9])([A-Z])', r'\1 \2', field)
-            return s1.replace("_", " ").title()
+
 
         # ---------------- Prompt user if any mandatory fields are missing ----------------
         if missing_mandatory_fields:
@@ -4540,7 +4354,7 @@ def api_validate():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/new-search", methods=["POST"])
+@app.route("/api/new-search", methods=["POST"])
 @login_required
 def api_new_search():
     """Initialize a new search session, clearing any previous state"""
@@ -4573,7 +4387,7 @@ def api_new_search():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/schema", methods=["GET"])
+@app.route("/api/schema", methods=["GET"])
 @login_required
 def api_schema():
     if not components:
@@ -4628,7 +4442,7 @@ def api_schema():
             "error": str(e)
         }), 200  # Return 200 to prevent frontend from breaking
 
-@app.route("/additional_requirements", methods=["POST"])
+@app.route("/api/additional_requirements", methods=["POST"])
 @login_required
 def api_additional_requirements():
     if not components:
@@ -4689,7 +4503,7 @@ def api_additional_requirements():
         logging.exception("Additional requirements handling failed.")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/structure_requirements", methods=["POST"])
+@app.route("/api/structure_requirements", methods=["POST"])
 @login_required
 def api_structure_requirements():
     if not components:
@@ -4855,7 +4669,7 @@ def api_add_advanced_parameters():
         logging.exception("Latest advanced specifications addition failed.")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/analyze", methods=["POST"])
+@app.route("/api/analyze", methods=["POST"])
 @login_required
 def api_analyze():
     try:
@@ -4991,7 +4805,7 @@ def match_user_with_pdf(user_input, pdf_data):
 
     return matched_results
 
-@app.route("/get_field_description", methods=["POST"])
+@app.route("/api/get_field_description", methods=["POST"])
 @login_required
 def api_get_field_description():
     """
@@ -5138,7 +4952,7 @@ Example format: "±0.75% or ±2.5°C (whichever is greater) per IEC 60584"
             "description": ""
         }), 500
 
-@app.route("/get_all_field_descriptions", methods=["POST"])
+@app.route("/api/get_all_field_descriptions", methods=["POST"])
 @login_required
 def api_get_all_field_descriptions():
     """
@@ -5300,7 +5114,7 @@ def get_submodel_to_model_series_mapping():
     logging.info(f"Generated submodel mapping with {len(submodel_to_series)} entries")
     return submodel_to_series
 
-@app.route("/vendors", methods=["GET"])
+@app.route("/api/vendors", methods=["GET"])
 @login_required
 def get_vendors():
     """
@@ -5428,7 +5242,7 @@ def get_vendors():
             }
         }), 500
 
-@app.route("/submodel-mapping", methods=["GET"])
+@app.route("/api/submodel-mapping", methods=["GET"])
 @login_required
 def get_submodel_mapping():
     """
@@ -5447,7 +5261,7 @@ def get_submodel_mapping():
         logging.error(f"Error getting submodel mapping: {e}")
         return jsonify({"error": "Failed to get submodel mapping", "mapping": {}}), 500
 
-@app.route("/admin/approve_user", methods=["POST"])
+@app.route("/api/admin/approve_user", methods=["POST"])
 @login_required
 def approve_user():
     admin_user = db.session.get(User, session['user_id'])
@@ -5470,7 +5284,7 @@ def approve_user():
     db.session.commit()
     return jsonify({"message": f"User {user.username} status updated to {user.status}."}), 200
 
-@app.route("/admin/pending_users", methods=["GET"])
+@app.route("/api/admin/pending_users", methods=["GET"])
 @login_required
 def pending_users():
     admin_user = db.session.get(User, session['user_id'])
@@ -5487,10 +5301,7 @@ def pending_users():
     } for u in pending]
     return jsonify({"pending_users": result}), 200
 
-# Duplicated ALLOWED_EXTENSIONS and allowed_file, can be removed.
-# ALLOWED_EXTENSIONS = {"pdf"}
-# def allowed_file(filename: str):
-#    ...
+# Duplicate ALLOWED_EXTENSIONS and allowed_file removed.
 
 @app.route("/api/get-price-review", methods=["GET"])
 @login_required
@@ -5503,7 +5314,7 @@ def api_get_price_review():
 
     return jsonify(results), 200
 
-@app.route("/upload", methods=["POST"])
+@app.route("/api/upload", methods=["POST"])
 @login_required
 def upload():
     if 'file' not in request.files:
@@ -5599,7 +5410,7 @@ def upload():
 # === - POST /standardization/submodel-mapping: Enhance submodel mapping data
 # =========================================================================
 
-@app.route("/standardization/report", methods=["GET"])
+@app.route("/api/standardization/report", methods=["GET"])
 @login_required
 def get_standardization_report():
     """
@@ -5612,7 +5423,7 @@ def get_standardization_report():
         logging.error(f"Failed to generate standardization report: {e}")
         return jsonify({"error": "Failed to generate standardization report"}), 500
 
-@app.route("/standardization/update-files", methods=["POST"])
+@app.route("/api/standardization/update-files", methods=["POST"])
 @login_required
 def update_files_with_standardization():
     """
@@ -5632,7 +5443,7 @@ def update_files_with_standardization():
         logging.error(f"Failed to update files with standardization: {e}")
         return jsonify({"error": "Failed to update files with standardization"}), 500
 
-@app.route("/standardization/vendor-analysis", methods=["POST"])
+@app.route("/api/standardization/vendor-analysis", methods=["POST"])
 @login_required
 def standardize_vendor_analysis():
     """
@@ -5653,7 +5464,7 @@ def standardize_vendor_analysis():
         logging.error(f"Failed to standardize vendor analysis: {e}")
         return jsonify({"error": "Failed to standardize vendor analysis"}), 500
 
-@app.route("/standardization/ranking", methods=["POST"])
+@app.route("/api/standardization/ranking", methods=["POST"])
 @login_required
 def standardize_ranking():
     """
@@ -5674,7 +5485,7 @@ def standardize_ranking():
         logging.error(f"Failed to standardize ranking: {e}")
         return jsonify({"error": "Failed to standardize ranking"}), 500
 
-@app.route("/standardization/submodel-mapping", methods=["POST"])
+@app.route("/api/standardization/submodel-mapping", methods=["POST"])
 @login_required
 def enhance_submodel_mapping_endpoint():
     """

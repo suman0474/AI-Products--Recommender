@@ -21,12 +21,20 @@ from flask import Blueprint, request, jsonify, session
 from functools import wraps
 
 # Import rate limiting
-from rate_limiter import get_limiter
-from rate_limit_config import RateLimitConfig
+# Import rate limiting
+from rate_limiter import get_limiter, RateLimitConfig
 
 # Import consolidated decorators and utilities
 from .auth_decorators import login_required
-from .api_utils import api_response, handle_errors
+from .api_utils import (
+    api_response, 
+    handle_errors,
+    convert_keys_to_camel_case,
+    clean_empty_values,
+    map_provided_to_schema,
+    get_missing_mandatory_fields,
+    friendly_field_name
+)
 
 # Import tags module for response tagging
 from tags import classify_response, ResponseTags
@@ -467,45 +475,7 @@ def get_product_schema():
         import copy
         import json
 
-        # Helper functions (same as main.py)
-        def convert_keys_to_camel_case(obj):
-            """Recursively converts dictionary keys from snake_case to camelCase."""
-            if isinstance(obj, dict):
-                new_dict = {}
-                for key, value in obj.items():
-                    camel_key = re.sub(r'_([a-z])', lambda m: m.group(1).upper(), key)
-                    new_dict[camel_key] = convert_keys_to_camel_case(value)
-                return new_dict
-            elif isinstance(obj, list):
-                return [convert_keys_to_camel_case(item) for item in obj]
-            return obj
-
-        def clean_empty_values(data):
-            """Recursively replaces 'Not specified', etc., with empty strings."""
-            if isinstance(data, dict):
-                return {k: clean_empty_values(v) for k, v in data.items()}
-            elif isinstance(data, list):
-                return [clean_empty_values(item) for item in data]
-            elif isinstance(data, str) and data.lower().strip() in ["not specified", "not requested", "none specified", "n/a", "na"]:
-                return ""
-            return data
-
-        def map_provided_to_schema(detected_schema: dict, provided: dict) -> dict:
-            """Maps providedRequirements into the schema structure."""
-            mapped = copy.deepcopy(detected_schema)
-            if "mandatoryRequirements" in provided or "optionalRequirements" in provided:
-                for section in ["mandatoryRequirements", "optionalRequirements"]:
-                    if section in provided and section in mapped:
-                        for key, value in provided[section].items():
-                            if key in mapped[section]:
-                                mapped[section][key] = value
-                return mapped
-            for key, value in provided.items():
-                if key in mapped.get("mandatoryRequirements", {}):
-                    mapped["mandatoryRequirements"][key] = value
-                elif key in mapped.get("optionalRequirements", {}):
-                    mapped["optionalRequirements"][key] = value
-            return mapped
+        # Helper functions moved to api_utils.py
 
         # Load schema (same as main.py)
         from loading import load_requirements_schema, build_requirements_schema_from_web
@@ -565,34 +535,13 @@ def get_product_schema():
             "providedRequirements": mapped_provided_reqs
         }
 
-        # Get missing mandatory fields (same logic as main.py)
-        def get_missing_mandatory_fields(provided: dict, schema: dict) -> list:
-            missing = []
-            mandatory_schema = schema.get("mandatoryRequirements", {})
-            provided_mandatory = provided.get("mandatoryRequirements", {})
-
-            def traverse_and_check(schema_node, provided_node):
-                for key, schema_value in schema_node.items():
-                    if isinstance(schema_value, dict):
-                        traverse_and_check(schema_value, provided_node.get(key, {}) if isinstance(provided_node, dict) else {})
-                    else:
-                        provided_value = provided_node.get(key) if isinstance(provided_node, dict) else None
-                        if provided_value is None or str(provided_value).strip() in ["", ","]:
-                            missing.append(key)
-
-            traverse_and_check(mandatory_schema, provided_mandatory)
-            return missing
+        # Missing fields identification moved to api_utils.py
 
         missing_mandatory_fields = get_missing_mandatory_fields(
             mapped_provided_reqs, response_data["detectedSchema"]
         )
 
-        # Add validation alert if missing fields (same as main.py)
         if missing_mandatory_fields:
-            def friendly_field_name(field):
-                s1 = re.sub('([a-z0-9])([A-Z])', r'\1 \2', field)
-                return s1.replace("_", " ").title()
-
             missing_fields_friendly = [friendly_field_name(f) for f in missing_mandatory_fields]
             missing_fields_str = ", ".join(missing_fields_friendly)
 
@@ -748,6 +697,17 @@ def identify_instruments():
         session_id=session_id,
         workflow_type='instrument_identification'
     )
+
+    # Check for identification failure
+    if result.get('identification_failed'):
+        error_msg = result.get('identification_error', 'Failed to identify instruments')
+        is_rate_limit = any(x in str(error_msg) for x in ['RESOURCE_EXHAUSTED', 'quota', '429'])
+        return api_response(
+            False, 
+            error=error_msg, 
+            status_code=503 if is_rate_limit else 500,
+            retryable=is_rate_limit
+        )
 
     # Classify response and generate tags
     tags = classify_response(
@@ -977,6 +937,20 @@ def solution_workflow():
         user_input=message,
         session_id=session_id
     )
+
+    # Check for identification failure (e.g., due to rate limits)
+    if result.get('identification_failed'):
+        error_msg = result.get('identification_error', 'Failed to identify instruments')
+        
+        # Check if it's a rate limit error
+        is_rate_limit = any(x in str(error_msg) for x in ['RESOURCE_EXHAUSTED', 'quota', '429'])
+        
+        return api_response(
+            False, 
+            error=error_msg, 
+            status_code=503 if is_rate_limit else 500,
+            retryable=is_rate_limit
+        )
 
     # Classify response and generate tags
     tags = classify_response(

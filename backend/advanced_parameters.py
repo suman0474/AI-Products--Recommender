@@ -16,6 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 # Use Azure Blob for advanced parameters storage
 from azure_blob_config import get_azure_blob_connection
+from config import AgenticConfig
 from llm_fallback import create_llm_with_fallback
 
 # MONGO_TTL_DAYS removed - advanced parameters persist indefinitely
@@ -170,7 +171,7 @@ class AdvancedParametersDiscovery:
 
     def __init__(self):
         self.llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.4,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
@@ -425,7 +426,7 @@ def discover_advanced_parameters(product_type: str) -> Dict[str, Any]:
         logging.info(f"Starting single-call advanced specification discovery for: {product_type}")
 
         llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.4,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )

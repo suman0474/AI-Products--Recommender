@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Dict, Any, List, Optional
 from llm_standardization import standardize_with_llm
+from flask import jsonify
+import re
 
 def standardize_vendor_analysis_result(analysis_result: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -961,6 +963,76 @@ def update_existing_vendor_files_with_standardization():
     except Exception as e:
         logging.error(f"Failed to update vendor files: {e}")
         return []
+def apply_standardization_to_response(data: Any) -> Any:
+    """
+    Apply appropriate standardization to response data based on its content.
+    This function detects the type of data and applies the correct standardization.
+    """
+    if not isinstance(data, dict):
+        return data
+    
+    try:
+        # Standardize using deep copy to avoid modifying original data
+        standardized = data.copy()
+        for key, value in data.items():
+            if key in ["vendor_analysis", "vendorAnalysis"] and isinstance(value, dict):
+                try:
+                    standardized[key] = standardize_vendor_analysis_result(value)
+                except Exception as e:
+                    logging.warning(f"Failed to standardize vendor analysis: {e}")
+                    standardized[key] = value
+            elif key in ["overall_ranking", "overallRanking", "ranking"] and isinstance(value, dict):
+                try:
+                    standardized[key] = standardize_ranking_result(value)
+                except Exception as e:
+                    logging.warning(f"Failed to standardize ranking: {e}")
+                    standardized[key] = value
+            elif key in ["vendors"] and isinstance(value, list):
+                # Apply basic vendor name standardization
+                standardized_vendors = []
+                for vendor in value:
+                    if isinstance(vendor, dict) and "name" in vendor:
+                        vendor_copy = vendor.copy()
+                        try:
+                            vendor_copy["name"] = standardize_vendor_name(vendor.get("name", ""))
+                        except Exception as e:
+                            logging.warning(f"Failed to standardize vendor name: {e}")
+                            vendor_copy["name"] = vendor.get("name", "")
+                        standardized_vendors.append(vendor_copy)
+                    else:
+                        standardized_vendors.append(vendor)
+                standardized[key] = standardized_vendors
+        return standardized
+    
+    except Exception as e:
+        logging.warning(f"Standardization failed for response data: {e}")
+        return data
+
+
+def standardized_jsonify(data, status_code=200):
+    """
+    Enhanced jsonify function that applies standardization before converting to camelCase.
+    Use this instead of jsonify() for responses containing vendor/product data.
+    """
+    from agentic.api_utils import convert_keys_to_camel_case
+    try:
+        # Apply standardization first (with timeout protection)
+        standardized_data = apply_standardization_to_response(data)
+        
+        # Then convert to camelCase for frontend compatibility
+        camel_case_data = convert_keys_to_camel_case(standardized_data)
+        
+        return jsonify(camel_case_data), status_code
+    except Exception as e:
+        logging.error(f"Failed to apply standardization in jsonify wrapper: {e}")
+        # Fallback to regular conversion if standardization fails
+        try:
+            camel_case_data = convert_keys_to_camel_case(data)
+            return jsonify(camel_case_data), status_code
+        except Exception as fallback_error:
+            logging.error(f"Even fallback conversion failed: {fallback_error}")
+            # Last resort: return data as-is
+            return jsonify(data), status_code
 
 if __name__ == "__main__":
     # Test the standardization utilities

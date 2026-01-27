@@ -580,7 +580,7 @@ def fetch_generic_images_batch(product_types: list, max_parallel_cache_checks: i
             # Check exact match first
             azure_image = get_generic_image_from_azure(product_type)
             if azure_image:
-                backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+                backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
                 return (product_type, {
                     'url': backend_url,
                     'product_type': product_type,
@@ -713,7 +713,7 @@ def _try_fallback_cache_lookup(product_type: str) -> Optional[Dict[str, Any]]:
         azure_image = get_generic_image_from_azure(fallback)
         if azure_image:
             logger.info(f"[BATCH_IMAGE] ✓ Fallback cache hit: '{fallback}' for '{product_type}'")
-            backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+            backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
             return {
                 'url': backend_url,
                 'product_type': product_type,
@@ -751,7 +751,7 @@ def _try_fallback_cache_lookup(product_type: str) -> Optional[Dict[str, Any]]:
                     azure_image = get_generic_image_from_azure(generic_type)
                     if azure_image:
                         logger.info(f"[BATCH_IMAGE] ✓ Category fallback: '{generic_type}' for '{product_type}'")
-                        backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+                        backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
                         return {
                             'url': backend_url,
                             'product_type': product_type,
@@ -796,10 +796,10 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
         if azure_image.get('storage_location') == 'local':
             # Local URL
             filename = os.path.basename(azure_image.get('azure_blob_path', ''))
-            backend_url = f"images/generic/{filename}"
+            backend_url = f"/api/images/generic_images/{filename}"
         else:
             # Azure URL (proxied via existing logic if needed, but here we stay consistent)
-            backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+            backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
 
         return {
             'url': backend_url,
@@ -934,7 +934,7 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
             azure_image = get_generic_image_from_azure(category_fallback)
             if azure_image:
                 logger.info(f"[FETCH] ✓ Category fallback found: '{category_fallback}' for '{product_type}'")
-                backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+                backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
 
                 return {
                     'url': backend_url,
@@ -998,7 +998,7 @@ def fetch_generic_product_image(product_type: str) -> Optional[Dict[str, Any]]:
                 # Retrieve the cached image to get the URL
                 azure_image = get_generic_image_from_azure(product_type)
                 if azure_image:
-                    backend_url = f"images/{azure_image.get('azure_blob_path', '')}"
+                    backend_url = f"/api/images/{azure_image.get('azure_blob_path', '')}"
 
                     # Notify waiting requests
                     with _pending_lock:

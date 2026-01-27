@@ -11,6 +11,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 import os
 from llm_fallback import create_llm_with_fallback
+from config import AgenticConfig
 from prompts_library import load_prompt
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def identify_instruments_tool(requirements: str) -> Dict[str, Any]:
     """
     try:
         llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.1,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )
@@ -210,7 +211,7 @@ def identify_accessories_tool(
             logger.info(f"[Accessory ID] LLM attempt {attempt}/3...")
 
             llm = create_llm_with_fallback(
-                model="gemini-2.5-pro",
+                model=AgenticConfig.PRO_MODEL,
                 temperature=0.1,
                 google_api_key=os.getenv("GOOGLE_API_KEY")
             )

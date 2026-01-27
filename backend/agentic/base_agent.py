@@ -428,7 +428,8 @@ class BaseRAGAgent(ABC):
         """
         default_message = (
             f"I don't have any relevant {self.COLLECTION_TYPE} documents "
-            "to answer this question."
+            "to answer this question. Check the logs for [VS-ROOT-CAUSE] messages "
+            "to diagnose vector store configuration issues."
         )
         return {
             'success': False,

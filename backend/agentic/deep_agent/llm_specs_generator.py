@@ -27,6 +27,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from llm_fallback import create_llm_with_fallback
 from ..llm_manager import get_cached_llm
+from config import AgenticConfig
 from prompts_library import load_prompt, load_prompt_sections
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,11 @@ logger = logging.getLogger(__name__)
 # MODEL CONFIGURATION
 # =============================================================================
 
-# Model for standard LLM spec generation (fast)
-LLM_SPECS_MODEL = "gemini-2.5-pro"
+# Model for LLM spec generation (uses centralized config)
+LLM_SPECS_MODEL = AgenticConfig.PRO_MODEL
 
-# Model for deep reasoning / key discovery (more capable)
-REASONING_MODEL = "gemini-2.5-pro"
+# Model for deep reasoning / key discovery (uses centralized config)
+REASONING_MODEL = AgenticConfig.PRO_MODEL
 
 # Singleton instances for efficiency
 _specs_llm = None

@@ -1790,6 +1790,28 @@ def run_standards_deep_agent_batch(
                 "target_reached": total_count >= MIN_STANDARDS_SPECS_COUNT
             }
 
+        # ================================================================
+        # FIX #1: Ensure standards_info.total_specs_count is Always Set
+        # ================================================================
+        # This is CRITICAL for Phase 3 optimization validation to work correctly
+        # Without this, the enrichment_source flag and spec count get out of sync
+        logger.info(f"[BATCH] Step 6: Finalizing standards_info for all items...")
+        for enriched_item in enriched_items:
+            combined_specs = enriched_item.get("combined_specifications", {})
+            standards_info = enriched_item.setdefault("standards_info", {})
+
+            # Count valid specs in combined_specifications
+            total_specs_count = _count_valid_specs(combined_specs)
+            standards_info["total_specs_count"] = total_specs_count
+            standards_info["enrichment_status"] = "success"
+            standards_info["enrichment_method"] = "batch_deep_agent"
+
+            # Deduplicate standards_analyzed list
+            standards_info["standards_analyzed"] = list(set(standards_info.get("standards_analyzed", [])))
+
+            item_name = enriched_item.get("name", f"Item {enriched_items.index(enriched_item)+1}")
+            logger.info(f"[BATCH-FINAL] Item '{item_name}': {total_specs_count} total specs (target: {total_specs_count >= MIN_STANDARDS_SPECS_COUNT})")
+
         # Calculate totals
         processing_time = int((time.time() - start_time) * 1000)
         successful_count = sum(

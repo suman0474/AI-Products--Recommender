@@ -100,26 +100,43 @@ class PineconeDocumentStore(BaseDocumentStore):
     
     def __init__(self, api_key: str = None, index_name: str = None):
         super().__init__()
-        
+
         self.api_key = api_key or PINECONE_API_KEY
         self.index_name = index_name or PINECONE_INDEX_NAME
-        
+
+        # ROOT CAUSE FIX: Better diagnostics for Mock mode activation
+        self._mock_reason = None
+
         if not self.api_key:
-            logger.warning("[VS] PINECONE_API_KEY missing - falling back to Mock Document Store")
+            logger.warning(
+                "[VS-ROOT-CAUSE] PINECONE_API_KEY environment variable not set. "
+                "Vector store falling back to Mock Document Store (returns 0 results). "
+                "ACTION: Set PINECONE_API_KEY environment variable to enable real document retrieval."
+            )
             self._use_mock = True
+            self._mock_reason = "MISSING_API_KEY"
         else:
             try:
                 from pinecone import Pinecone
-                
+
                 self.pc = Pinecone(api_key=self.api_key)
                 self.index = self.pc.Index(self.index_name)
                 self._use_mock = False
-                
-                logger.info(f"PineconeDocumentStore initialized with index: {self.index_name}")
-                
-            except Exception as e:
-                logger.error(f"Failed to initialize Pinecone: {e} - falling back to Mock Document Store")
+
+                logger.info(f"[VS] PineconeDocumentStore initialized successfully with index: {self.index_name}")
+
+            except ImportError as e:
+                logger.error(f"[VS-ROOT-CAUSE] Failed to import Pinecone package: {e}")
                 self._use_mock = True
+                self._mock_reason = "IMPORT_ERROR"
+            except Exception as e:
+                logger.error(
+                    f"[VS-ROOT-CAUSE] Failed to initialize Pinecone: {e} "
+                    f"(Index: {self.index_name}). Falling back to Mock Document Store. "
+                    f"ACTION: Verify PINECONE_API_KEY is valid and index '{self.index_name}' exists."
+                )
+                self._use_mock = True
+                self._mock_reason = f"INIT_ERROR: {type(e).__name__}"
 
     def _get_namespace(self, collection_type: str) -> str:
         """Map collection type to Pinecone namespace."""
@@ -189,7 +206,20 @@ class PineconeDocumentStore(BaseDocumentStore):
                filter_metadata: Optional[Dict] = None) -> Dict:
         """Search for documents in Pinecone with embedding caching."""
         if getattr(self, '_use_mock', False):
-            return {"success": True, "results": [], "result_count": 0, "collection": collection_type}
+            # ROOT CAUSE FIX: Include diagnostic information in mock search result
+            mock_reason = getattr(self, '_mock_reason', 'UNKNOWN')
+            logger.warning(
+                f"[VS-MOCK-SEARCH] Search returning 0 results because: {mock_reason}. "
+                f"Query: '{query[:50]}...' Collection: {collection_type}"
+            )
+            return {
+                "success": True,
+                "results": [],
+                "result_count": 0,
+                "collection": collection_type,
+                "mock_mode": True,
+                "mock_reason": mock_reason
+            }
 
         try:
             namespace = self._get_namespace(collection_type)

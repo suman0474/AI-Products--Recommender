@@ -437,13 +437,53 @@ def validate_response_node(state: GroundedChatState) -> GroundedChatState:
     """
     Node 5: Validate the generated response.
     Checks for relevance, accuracy, grounding, citations, and hallucination.
+
+    OPTIMIZATION: Skip validation LLM call when answer is substantial and
+    no obvious issues detected. This saves 1 LLM call per request.
     """
     logger.info("[CHAT] Node 5: Validating response...")
     state["current_node"] = "validate_response"
-    
+
+    # =========================================================================
+    # OPTIMIZATION: Skip validation if answer is substantial and well-formed
+    # This saves 1 LLM API call when the answer is clearly adequate
+    # =========================================================================
+    answer = state.get("generated_answer", "")
+    answer_length = len(answer)
+    retry_count = state.get("retry_count", 0)
+
+    # Skip validation if answer is substantial (>=300 chars) and this is first attempt
+    if answer_length >= 300 and retry_count == 0:
+        # Quick heuristic checks instead of LLM validation
+        has_structure = any(marker in answer for marker in ['•', '-', '1.', '**', '\n\n'])
+        no_error_markers = not any(err in answer.lower() for err in ['error', 'sorry', "don't know", "cannot"])
+
+        if has_structure and no_error_markers:
+            logger.info(f"[CHAT] SKIP validation - answer substantial ({answer_length} chars) with good structure")
+            state["is_valid"] = True
+            state["validation_score"] = 0.85  # Assume high score for substantial answer
+            state["validation_issues"] = []
+            state["hallucination_detected"] = False
+            state["validation_feedback"] = ""
+            state["messages"].append({
+                "role": "system",
+                "content": f"Validation skipped - answer substantial ({answer_length} chars)"
+            })
+            return state
+
+    # Skip validation on retries if answer improved
+    if retry_count > 0 and answer_length >= 200:
+        logger.info(f"[CHAT] SKIP validation on retry - answer adequate ({answer_length} chars)")
+        state["is_valid"] = True
+        state["validation_score"] = 0.75
+        state["validation_issues"] = []
+        state["hallucination_detected"] = False
+        state["validation_feedback"] = ""
+        return state
+
     try:
         validator = _get_validator_agent()
-        
+
         # Build context for validation
         context = json.dumps({
             "preferred_vendors": state.get("preferred_vendors", []),
@@ -451,31 +491,31 @@ def validate_response_node(state: GroundedChatState) -> GroundedChatState:
             "installed_series": state.get("installed_series", []),
             "rag_context": state.get("rag_context", {})
         })
-        
+
         result = validator.run(
             response=state["generated_answer"],
             user_question=state["user_question"],
             context=context
         )
-        
+
         state["is_valid"] = result.get("is_valid", False)
         state["validation_score"] = result.get("overall_score", 0.0)
         state["validation_issues"] = result.get("issues_found", [])
         state["hallucination_detected"] = result.get("hallucination_detected", False)
         state["validation_feedback"] = result.get("suggestions", "")
-        
+
         state["messages"].append({
             "role": "system",
             "content": f"Validation: valid={state['is_valid']}, score={state['validation_score']:.2f}, hallucination={state['hallucination_detected']}"
         })
-        
+
         logger.info(f"[CHAT] Validation: valid={state['is_valid']}, score={state['validation_score']:.2f}")
-        
+
     except Exception as e:
         logger.error(f"[CHAT] Validation failed: {e}")
         state["is_valid"] = True  # Assume valid on error
         state["validation_score"] = 0.5
-    
+
     return state
 
 

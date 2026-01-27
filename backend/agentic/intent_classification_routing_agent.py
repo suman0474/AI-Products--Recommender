@@ -15,81 +15,13 @@ Usage:
 """
 
 import logging
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any
 from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
 
-# Import prompt loader for external prompts
-from prompts_library import load_prompt_sections
-
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# LOAD EXTERNAL PROMPTS AND PATTERNS
-# =============================================================================
-
-def _parse_pattern_list(content: str, section_name: str) -> List[str]:
-    """
-    Parse a list of patterns from a section in the prompt file.
-    
-    Args:
-        content: Full content of the prompt file
-        section_name: Name of section to parse (e.g., "EXIT_PHRASES:")
-    
-    Returns:
-        List of patterns from that section
-    """
-    patterns = []
-    in_section = False
-    
-    for line in content.split('\n'):
-        line = line.strip()
-        
-        # Check if we're entering the target section
-        if line.upper().startswith(section_name.upper()):
-            in_section = True
-            continue
-        
-        # Check if we're leaving the section (new section or empty line after patterns)
-        if in_section:
-            if line.startswith('#') and ':' in line:
-                # New section header
-                break
-            if line.endswith(':') and not line.startswith('-'):
-                # New section
-                break
-            
-            # Parse pattern line
-            if line.startswith('- '):
-                pattern = line[2:].strip()
-                if pattern:
-                    patterns.append(pattern)
-    
-    return patterns
-
-
-# Load external prompts from consolidated files
-_INTENT_PROMPTS = load_prompt_sections("intent_prompts")
-
-OUT_OF_DOMAIN_MESSAGE = _INTENT_PROMPTS["OUT_OF_DOMAIN"]
-
-# Load patterns from consolidated file
-_patterns_content = _INTENT_PROMPTS["ROUTING_PATTERNS"]
-
-EXIT_PHRASES = _parse_pattern_list(_patterns_content, "EXIT_PHRASES:")
-GREETING_PHRASES = _parse_pattern_list(_patterns_content, "GREETING_PHRASES:")
-
-# Combine all knowledge question patterns into one list
-KNOWLEDGE_QUESTION_PATTERNS = (
-    _parse_pattern_list(_patterns_content, "STANDARDS_KEYWORDS:") +
-    _parse_pattern_list(_patterns_content, "QUESTION_STARTERS:") +
-    _parse_pattern_list(_patterns_content, "CERTIFICATION_TERMS:")
-)
-
-logger.info(f"[IntentRouting] Loaded {len(EXIT_PHRASES)} exit phrases, {len(GREETING_PHRASES)} greeting phrases, {len(KNOWLEDGE_QUESTION_PATTERNS)} knowledge patterns")
 
 
 # =============================================================================
@@ -174,270 +106,32 @@ def get_workflow_memory() -> WorkflowStateMemory:
     return _workflow_memory
 
 
-
 # =============================================================================
-# EXIT AND KNOWLEDGE DETECTION FUNCTIONS
+# EXIT DETECTION
 # =============================================================================
-# Note: EXIT_PHRASES, GREETING_PHRASES, and KNOWLEDGE_QUESTION_PATTERNS
-# are loaded from external prompt files at module initialization (see above)
 
-def is_knowledge_question(user_input: str) -> bool:
-    """
-    Check if user input is a knowledge question that should break workflow lock.
-    
-    Knowledge questions include:
-    - Standards queries (SIL, ATEX, IEC, ISO)
-    - "What is X?" style questions
-    - "How does X work?" style questions
-    - Definition/explanation requests
-    
-    Returns:
-        True if this is a knowledge question that should route to EnGenie
-    """
-    lower_input = user_input.lower().strip()
-    
-    # Check for knowledge patterns
-    for pattern in KNOWLEDGE_QUESTION_PATTERNS:
-        if pattern in lower_input:
-            return True
-    
-    # Check for question mark with question words
-    if "?" in lower_input:
-        question_words = ["what", "how", "why", "when", "where", "which", "who", "does", "is", "are", "can"]
-        if any(lower_input.startswith(word) for word in question_words):
-            return True
-    
-    return False
+# Phrases that indicate user wants to exit current workflow
+EXIT_PHRASES = [
+    "start over", "new search", "reset", "clear", "begin again", 
+    "start new", "exit", "quit", "cancel", "back to start"
+]
 
+# Greetings that indicate new conversation
+GREETING_PHRASES = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
 
 def should_exit_workflow(user_input: str) -> bool:
     """Check if user wants to exit current workflow."""
     lower_input = user_input.lower().strip()
-
+    
     # Check for exit phrases
     if any(phrase in lower_input for phrase in EXIT_PHRASES):
         return True
-
+    
     # Check for pure greetings (new conversation)
     if lower_input in GREETING_PHRASES:
         return True
-
+    
     return False
-
-
-# =============================================================================
-# METRICS-BASED SYSTEM COMPLEXITY DETECTION
-# =============================================================================
-
-def extract_system_complexity_metrics(user_input: str) -> Dict[str, Any]:
-    """
-    Extract metrics from user input to determine system complexity.
-
-    Works universally for temperature, pressure, flow, level, analytical systems.
-    Uses thresholds (not keywords) to make routing decisions.
-
-    Returns dict with:
-    - measurement_locations: Count of distinct measurement points/locations
-    - total_measurement_points: Total number of measurement points
-    - estimated_instruments: Estimated number of instruments needed
-    - has_networking: Whether system requires connectivity/networking
-    - has_subsystems: Whether system has subsystems/multiple stages
-    - complexity_score: 0-100 score (higher = more complex)
-    - is_complex_system: Boolean indicating if system is complex
-    """
-    lower_input = user_input.lower()
-    metrics = {
-        "measurement_locations": 0,
-        "total_measurement_points": 0,
-        "estimated_instruments": 0,
-        "has_networking": False,
-        "has_subsystems": False,
-        "complexity_score": 0,
-        "is_complex_system": False,
-        "indicators": []
-    }
-
-    # ========================================================================
-    # DETECT MEASUREMENT LOCATIONS
-    # ========================================================================
-
-    location_keywords = {
-        "inlet": 1, "outlet": 1, "feed": 1, "discharge": 1,
-        "upstream": 1, "downstream": 1, "bypass": 1,
-        "top": 1, "bottom": 1, "middle": 1, "mid": 1,
-        "zone": 1, "section": 1, "stage": 1, "level": 1,
-        "in-line": 1, "branch": 1, "line": 0.5,  # "line" is common, weight less
-    }
-
-    for keyword, weight in location_keywords.items():
-        count = lower_input.count(keyword)
-        if count > 0:
-            metrics["measurement_locations"] += min(count * weight, 5)
-
-    # Check for explicit location counts (e.g., "4 zones", "8 tubes")
-    import re
-    location_patterns = [
-        r'(\d+)\s*(zones?|tubes?|locations?|points?|sections?|stages?)',
-        r'(\d+)\s*(?:different|separate|distinct)\s*(locations?|points?|areas?)',
-    ]
-
-    for pattern in location_patterns:
-        matches = re.findall(pattern, lower_input)
-        if matches:
-            for match in matches:
-                try:
-                    count = int(match[0])
-                    metrics["measurement_locations"] = max(metrics["measurement_locations"], count)
-                except (ValueError, IndexError):
-                    pass
-
-    # ========================================================================
-    # DETECT TOTAL MEASUREMENT POINTS
-    # ========================================================================
-
-    measurement_patterns = [
-        r'(\d+)\s*(?:measurement|measuring|monitoring|data|reading)\s*(?:points?|channels?)',
-        r'(\d+)\s*(?:temperature|pressure|flow|level)\s*(?:points?|measurements?)',
-        r'(\d+)\s*total\s*(?:points?|measurements?)',
-    ]
-
-    for pattern in measurement_patterns:
-        matches = re.findall(pattern, lower_input)
-        if matches:
-            for match in matches:
-                try:
-                    count = int(match)
-                    metrics["total_measurement_points"] = max(metrics["total_measurement_points"], count)
-                except ValueError:
-                    pass
-
-    # ========================================================================
-    # ESTIMATE INSTRUMENT COUNT
-    # ========================================================================
-
-    instrument_keywords = {
-        "transmitter": 1, "sensor": 1, "meter": 1,
-        "thermocouple": 1, "rtd": 1, "thermometer": 1,
-        "pressure": 1, "flow": 1, "level": 1, "temperature": 1,
-        "analyzer": 2, "controller": 1, "switch": 0.5,  # Switch less specific
-    }
-
-    for keyword, weight in instrument_keywords.items():
-        count = lower_input.count(keyword)
-        if count > 0:
-            metrics["estimated_instruments"] += min(count * weight, 5)
-
-    # Check for explicit instrument counts
-    instrument_patterns = [
-        r'(\d+)\s*(?:transmitters?|sensors?|meters?|instruments?|instruments?)',
-    ]
-
-    for pattern in instrument_patterns:
-        matches = re.findall(pattern, lower_input)
-        if matches:
-            for match in matches:
-                try:
-                    count = int(match)
-                    metrics["estimated_instruments"] = max(metrics["estimated_instruments"], count)
-                except ValueError:
-                    pass
-
-    # ========================================================================
-    # DETECT PROCESS UNITS (High Indication of Solution)
-    # ========================================================================
-    
-    process_unit_keywords = [
-        "reactor", "distillation", "column", "vessel", "tank", "boiler", 
-        "furnace", "heat exchanger", "compressor", "turbine", "separator",
-        "scrubber", "absorber", "crystallizer", "evaporator", "pump skid",
-        "recycle line", "fixed bed", "catalytic reactor"
-    ]
-    
-    for keyword in process_unit_keywords:
-        if keyword in lower_input:
-            metrics["complexity_score"] += 15  # Boost score
-            metrics["indicators"].append(f"Process Unit: {keyword}")
-            # Identify "reactor" specifically as a strong indicator
-            if keyword == "reactor":
-                 metrics["complexity_score"] += 10
-
-    # ========================================================================
-    # DETECT NETWORKING REQUIREMENTS
-    # ========================================================================
-
-    networking_keywords = [
-        "wireless", "network", "connected", "hart", "modbus", "profibus",
-        "foundation fieldbus", "io-link", "ethernet", "cloud", "remote",
-        "monitoring", "data logging", "acquisition", "iot", "analog",
-        "4-20ma", "control loop", "dcs", "plc", "scada"
-    ]
-
-    for keyword in networking_keywords:
-        if keyword in lower_input:
-            metrics["has_networking"] = True
-            metrics["indicators"].append(f"Networking: {keyword}")
-            break
-
-    # ========================================================================
-    # DETECT SUBSYSTEMS/COMPLEXITY
-    # ========================================================================
-
-    subsystem_keywords = [
-        "system", "integrated", "complete", "comprehensive", "multi-stage",
-        "redundancy", "redundant", "backup", "failover", "automation", "control",
-        "profiling", "monitoring", "optimization", "circuit", "loop", "safety",
-        "classification", "shutdown", "emergency", "package", "skid",
-        "pulsation", "dampener", "flushing", "jacket", "spare parts",
-        "hot spot", "uniformity", "multi-tube"
-    ]
-
-    for keyword in subsystem_keywords:
-        if keyword in lower_input:
-            metrics["has_subsystems"] = True
-            metrics["indicators"].append(f"Subsystem: {keyword}")
-            break
-
-    # ========================================================================
-    # CALCULATE COMPLEXITY SCORE
-    # ========================================================================
-
-    # Score based on metrics (0-100)
-    score = metrics["complexity_score"]  # Start with existing boosts
-    score += min(metrics["measurement_locations"] * 10, 30)  # Up to 30 points
-    score += min(metrics["total_measurement_points"] * 2, 20)  # Up to 20 points
-    score += min(metrics["estimated_instruments"] * 12, 25)  # Up to 25 points
-    score += 15 if metrics["has_networking"] else 0
-    score += 10 if metrics["has_subsystems"] else 0
-
-    metrics["complexity_score"] = min(score, 100)
-
-    # ========================================================================
-    # DETERMINE IF COMPLEX SYSTEM (using thresholds)
-    # ========================================================================
-
-    # Threshold-based determination (not keyword-based)
-    is_complex = (
-        metrics["measurement_locations"] >= 4 or
-        metrics["total_measurement_points"] >= 8 or
-        metrics["estimated_instruments"] >= 3 or
-        (metrics["has_networking"] and metrics["has_subsystems"]) or
-        metrics["complexity_score"] >= 40
-    )
-
-    metrics["is_complex_system"] = is_complex
-
-    if is_complex:
-        metrics["indicators"].append("Complex system detected")
-
-    logger.info(
-        f"[Complexity Metrics] Score: {metrics['complexity_score']}/100 | "
-        f"Locations: {metrics['measurement_locations']} | "
-        f"Points: {metrics['total_measurement_points']} | "
-        f"Instruments: {metrics['estimated_instruments']} | "
-        f"Complex: {is_complex}"
-    )
-
-    return metrics
 
 
 # =============================================================================
@@ -465,6 +159,7 @@ class WorkflowRoutingResult:
     confidence: float                   # Confidence (0.0-1.0)
     reasoning: str                      # Explanation for routing decision
     is_solution: bool                   # Whether this is a solution-type request
+    target_rag: Optional[str]           # For ProductInfo: standards_rag, strategy_rag, product_info_rag
     solution_indicators: list           # Indicators that triggered solution detection
     extracted_info: Dict                # Any extracted information
     classification_time_ms: float       # Time taken to classify
@@ -479,7 +174,9 @@ class WorkflowRoutingResult:
             "intent": self.intent,
             "confidence": self.confidence,
             "reasoning": self.reasoning,
+            "reasoning": self.reasoning,
             "is_solution": self.is_solution,
+            "target_rag": self.target_rag,
             "solution_indicators": self.solution_indicators,
             "extracted_info": self.extracted_info,
             "classification_time_ms": self.classification_time_ms,
@@ -488,32 +185,142 @@ class WorkflowRoutingResult:
         }
 
 
+# =============================================================================
+# OUT OF DOMAIN RESPONSE
+# =============================================================================
+
+OUT_OF_DOMAIN_MESSAGE = """
+I'm EnGenie, your industrial automation and procurement assistant.
+
+I can help you with:
+• **Instrument Identification** - Finding sensors, transmitters, valves, and accessories
+• **Solution Design** - Complete instrumentation systems for your process needs
+• **Product Information** - Specifications, datasheets, and comparisons
+• **Standards & Compliance** - IEC, ISO, SIL, ATEX, and other certifications
+
+Please ask a question related to industrial automation or procurement.
+"""
 
 
-# Note: OUT_OF_DOMAIN_MESSAGE is loaded from external prompt file at module initialization (see above)
 # =============================================================================
 # INTENT TO WORKFLOW MAPPING
 # =============================================================================
+# Unified intent-to-workflow mapping with validation and is_solution override logic.
+# This is the SINGLE SOURCE OF TRUTH for intent routing decisions.
 
-INTENT_TO_WORKFLOW_MAP = {
-    # Solution Workflow - Complex systems
-    "solution": WorkflowTarget.SOLUTION_WORKFLOW,
+class IntentConfig:
+    """
+    Centralized intent-to-workflow mapping with validation.
 
-    # Instrument Identifier Workflow - Single products
-    "requirements": WorkflowTarget.INSTRUMENT_IDENTIFIER,
-    "additional_specs": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+    Handles the complex logic of routing based on both intent name and is_solution flag.
+    PHASE 1 FIX: Replaces hardcoded INTENT_TO_WORKFLOW_MAP with robust configuration.
+    """
 
-    # Product Info Workflow - Questions, greetings, workflow control
-    "question": WorkflowTarget.PRODUCT_INFO,
-    "productInfo": WorkflowTarget.PRODUCT_INFO,
-    "greeting": WorkflowTarget.PRODUCT_INFO,
-    "confirm": WorkflowTarget.PRODUCT_INFO,   # Continue current workflow
-    "reject": WorkflowTarget.PRODUCT_INFO,    # Cancel current workflow
+    # Primary intent-to-workflow mappings
+    # These are the ONLY valid intent values the LLM should return
+    INTENT_MAPPINGS = {
+        # Solution Workflow - Complex systems with multiple instruments
+        "solution": WorkflowTarget.SOLUTION_WORKFLOW,
+        "system": WorkflowTarget.SOLUTION_WORKFLOW,
+        "systems": WorkflowTarget.SOLUTION_WORKFLOW,
+        "complex_system": WorkflowTarget.SOLUTION_WORKFLOW,
+        "design": WorkflowTarget.SOLUTION_WORKFLOW,
 
-    # Out of Domain - Reject
-    "chitchat": WorkflowTarget.OUT_OF_DOMAIN,
-    "unrelated": WorkflowTarget.OUT_OF_DOMAIN,
-}
+        # Instrument Identifier Workflow - Single product with clear specifications
+        "requirements": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+        "additional_specs": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+        "instrument": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+        "accessories": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+        "spec_request": WorkflowTarget.INSTRUMENT_IDENTIFIER,
+
+        # Product Info Workflow - Knowledge, confirmations, standards, vendor info
+        "question": WorkflowTarget.PRODUCT_INFO,
+        "productinfo": WorkflowTarget.PRODUCT_INFO,
+        "product_info": WorkflowTarget.PRODUCT_INFO,
+        "greeting": WorkflowTarget.PRODUCT_INFO,
+        "confirm": WorkflowTarget.PRODUCT_INFO,
+        "reject": WorkflowTarget.PRODUCT_INFO,
+        "standards": WorkflowTarget.PRODUCT_INFO,
+        "vendor_strategy": WorkflowTarget.PRODUCT_INFO,
+        "grounded_chat": WorkflowTarget.PRODUCT_INFO,
+        "comparison": WorkflowTarget.PRODUCT_INFO,
+        "productcomparison": WorkflowTarget.PRODUCT_INFO,
+
+        # Out of Domain - Unrelated to industrial automation
+        "chitchat": WorkflowTarget.OUT_OF_DOMAIN,
+        "unrelated": WorkflowTarget.OUT_OF_DOMAIN,
+    }
+
+    # Intents that FORCE Solution Workflow regardless of other signals
+    # These are "strong indicators" that override even low confidence
+    SOLUTION_FORCING_INTENTS = {
+        "solution", "system", "systems", "complex_system", "design"
+    }
+
+    @classmethod
+    def get_workflow(cls, intent: str, is_solution: bool = False) -> WorkflowTarget:
+        """
+        Determine workflow target based on intent and is_solution flag.
+
+        ROUTING LOGIC (in priority order):
+        1. If intent is in SOLUTION_FORCING_INTENTS → SOLUTION_WORKFLOW
+        2. If is_solution=True → SOLUTION_WORKFLOW (override via flag)
+        3. Otherwise → Use intent mapping (default: PRODUCT_INFO for unknown)
+
+        Args:
+            intent: Intent classification string from LLM or rule-based classifier
+            is_solution: Boolean flag indicating complex system detection
+
+        Returns:
+            WorkflowTarget enum value
+
+        Examples:
+            get_workflow("solution", is_solution=False) → SOLUTION_WORKFLOW
+            get_workflow("question", is_solution=True) → SOLUTION_WORKFLOW
+            get_workflow("unknown_intent", is_solution=False) → PRODUCT_INFO
+        """
+        intent_lower = intent.lower().strip() if intent else "unrelated"
+
+        # Priority 1: Intent is a solution forcing intent
+        if intent_lower in cls.SOLUTION_FORCING_INTENTS:
+            logger.debug(f"[IntentConfig] Solution forcing intent: '{intent_lower}'")
+            return WorkflowTarget.SOLUTION_WORKFLOW
+
+        # Priority 2: is_solution flag is set (explicit complex system detection)
+        if is_solution:
+            logger.debug(f"[IntentConfig] is_solution flag set, routing to SOLUTION")
+            return WorkflowTarget.SOLUTION_WORKFLOW
+
+        # Priority 3: Use intent mapping (defaults to PRODUCT_INFO for unknowns)
+        workflow = cls.INTENT_MAPPINGS.get(intent_lower, WorkflowTarget.PRODUCT_INFO)
+        logger.debug(f"[IntentConfig] Intent '{intent_lower}' → {workflow.value}")
+        return workflow
+
+    @classmethod
+    def is_known_intent(cls, intent: str) -> bool:
+        """Check if intent is in the recognized list."""
+        if not intent:
+            return False
+        return intent.lower().strip() in cls.INTENT_MAPPINGS
+
+    @classmethod
+    def get_all_valid_intents(cls) -> list:
+        """Get list of all recognized intent values for validation and documentation."""
+        return list(cls.INTENT_MAPPINGS.keys())
+
+    @classmethod
+    def print_config(cls):
+        """Print configuration for debugging (logging)."""
+        logger.info("[IntentConfig] ===== INTENT CONFIGURATION =====")
+        logger.info(f"[IntentConfig] Total intents: {len(cls.INTENT_MAPPINGS)}")
+        logger.info(f"[IntentConfig] Solution forcing intents: {cls.SOLUTION_FORCING_INTENTS}")
+        for workflow in WorkflowTarget:
+            intents = [i for i, w in cls.INTENT_MAPPINGS.items() if w == workflow]
+            logger.info(f"[IntentConfig] {workflow.value}: {intents}")
+
+
+# Legacy alias for backward compatibility (can be removed in next version)
+INTENT_TO_WORKFLOW_MAP = IntentConfig.INTENT_MAPPINGS
 
 
 # =============================================================================
@@ -556,8 +363,10 @@ class IntentClassificationRoutingAgent:
         """
         Classify a query and determine which workflow to route to.
         
-        WORKFLOW LOCKING: If session is already in a workflow, returns that
-        workflow without re-classification (unless user wants to exit).
+        SMART LOCKING:
+        - Helper logic checks if the user is stuck in a workflow.
+        - Strong intents (greeting, new solution) BREAK the lock.
+        - Contextual intents (questions, confirmations) RESPECT the lock.
 
         Args:
             query: User query string from UI textarea
@@ -572,11 +381,12 @@ class IntentClassificationRoutingAgent:
         logger.info(f"[{self.name}] Classifying: '{query[:80]}...' (session: {session_id[:8]}...)")
 
         # =====================================================================
-        # STEP 1: CHECK FOR EXIT REQUEST
+        # STEP 1: CHECK FOR EXPRESS EXIT
         # =====================================================================
         if should_exit_workflow(query):
             self._memory.clear_workflow(session_id)
             logger.info(f"[{self.name}] Exit detected - clearing workflow state")
+            # Proceed to classify as a fresh query (likely resulting in Greeting or ProductInfo)
         
         # =====================================================================
         # STEP 2: CHECK WORKFLOW LOCK
@@ -608,6 +418,7 @@ class IntentClassificationRoutingAgent:
                 confidence=1.0,
                 reasoning=f"Session locked in {current_workflow} workflow",
                 is_solution=(current_workflow == "solution"),
+                target_rag=None,
                 solution_indicators=[],
                 extracted_info={"workflow_locked": True, "current_workflow": current_workflow},
                 classification_time_ms=classification_time_ms,
@@ -616,15 +427,9 @@ class IntentClassificationRoutingAgent:
             )
 
         # =====================================================================
-        # STEP 3A: EXTRACT SYSTEM COMPLEXITY METRICS
+        # STEP 3: NORMAL CLASSIFICATION (no lock or exit requested)
         # =====================================================================
-
-        metrics = extract_system_complexity_metrics(query)
-
-        # =====================================================================
-        # STEP 3B: NORMAL CLASSIFICATION (no lock or exit requested)
-        # =====================================================================
-
+        
         # Import classify_intent_tool here to avoid circular imports
         try:
             from tools.intent_tools import classify_intent_tool
@@ -654,26 +459,42 @@ class IntentClassificationRoutingAgent:
         solution_indicators = intent_result.get("solution_indicators", [])
         extracted_info = intent_result.get("extracted_info", {})
 
-        # Add metrics to extracted_info
-        extracted_info["system_metrics"] = metrics
+        # PHASE 1 FIX: Validate intent and route using centralized IntentConfig
+        if not IntentConfig.is_known_intent(intent):
+            logger.warning(
+                f"[{self.name}] Unknown intent '{intent}' from classifier. "
+                f"Valid intents: {IntentConfig.get_all_valid_intents()[:5]}... "
+                f"Mapping to 'unrelated'"
+            )
+            intent = "unrelated"
 
-        # Map intent to workflow
-        target_workflow = INTENT_TO_WORKFLOW_MAP.get(intent, WorkflowTarget.OUT_OF_DOMAIN)
+        # PHASE 1 FIX: Use centralized routing logic (replaces hardcoded mapping + override)
+        target_workflow = IntentConfig.get_workflow(intent, is_solution)
 
-        # =====================================================================
-        # STEP 3C: METRICS-BASED ROUTING ENHANCEMENT
-        # =====================================================================
+        # Log the routing decision
+        if is_solution or intent in IntentConfig.SOLUTION_FORCING_INTENTS:
+            logger.info(
+                f"[{self.name}] Solution detected: intent='{intent}', is_solution={is_solution}, "
+                f"indicators={solution_indicators}"
+            )
 
-        if metrics["is_complex_system"] and target_workflow != WorkflowTarget.SOLUTION_WORKFLOW:
-            target_workflow = WorkflowTarget.SOLUTION_WORKFLOW
-            is_solution = True
-            solution_indicators.append("Metrics-based complexity detection")
-            logger.info(f"[{self.name}] Metrics override to SOLUTION (score={metrics['complexity_score']})")
+        # Determine Target RAG for Product Info
+        target_rag = None
+        if target_workflow == WorkflowTarget.PRODUCT_INFO:
+            if intent == "standards":
+                target_rag = "standards_rag"
+            elif intent == "vendor_strategy":
+                target_rag = "strategy_rag"
+            else:
+                target_rag = "product_info_rag"
 
-        # Override: if is_solution flag is set, force Solution Workflow
-        if is_solution and target_workflow != WorkflowTarget.SOLUTION_WORKFLOW:
-            target_workflow = WorkflowTarget.SOLUTION_WORKFLOW
-            logger.info(f"[{self.name}] Overriding to SOLUTION due to is_solution=True")
+        # Override: Out of Domain Logic
+        reject_message = None
+        if target_workflow == WorkflowTarget.OUT_OF_DOMAIN:
+            reject_message = "Invalid question. Please ask a domain-related question about industrial instrumentation, standards, or product selection."
+            reasoning = f"Query classified as '{intent}' which is out of domain."
+        else:
+            reasoning = self._build_reasoning(intent, target_workflow, is_solution, solution_indicators)
 
         # =====================================================================
         # STEP 4: SET WORKFLOW STATE FOR SESSION
@@ -688,11 +509,8 @@ class IntentClassificationRoutingAgent:
             self._memory.set_workflow(session_id, workflow_name)
             logger.info(f"[{self.name}] Workflow state set: {workflow_name}")
 
-        # Build reasoning
-        reasoning = self._build_reasoning(intent, target_workflow, is_solution, solution_indicators)
-        
         # Prepare reject message for out-of-domain
-        reject_message = OUT_OF_DOMAIN_MESSAGE if target_workflow == WorkflowTarget.OUT_OF_DOMAIN else None
+        # reject_message logic handled above
 
         # Calculate classification time
         end_time = datetime.now()
@@ -707,6 +525,7 @@ class IntentClassificationRoutingAgent:
             confidence=confidence,
             reasoning=reasoning,
             is_solution=is_solution,
+            target_rag=target_rag,
             solution_indicators=solution_indicators,
             extracted_info=extracted_info,
             classification_time_ms=classification_time_ms,
@@ -742,7 +561,11 @@ class IntentClassificationRoutingAgent:
                 return "User confirmation detected"
             elif intent == "reject":
                 return "User rejection/cancellation detected"
-            return "Product/standards question detected"
+            elif intent == "standards":
+                return "Standards/compliance question detected"
+            elif intent == "vendor_strategy":
+                return "Vendor strategy question detected"
+            return "Product knowledge question detected"
 
         elif target_workflow == WorkflowTarget.OUT_OF_DOMAIN:
             return f"Out of domain: '{intent}' is not related to industrial automation"
@@ -761,6 +584,7 @@ class IntentClassificationRoutingAgent:
             confidence=0.0,
             reasoning=f"Classification error: {error}",
             is_solution=False,
+            target_rag=None,
             solution_indicators=[],
             extracted_info={},
             classification_time_ms=classification_time_ms,
@@ -835,12 +659,10 @@ __all__ = [
     'WorkflowStateMemory',
     'get_workflow_memory',
     'should_exit_workflow',
-    'is_knowledge_question',
     'route_to_workflow',
     'get_workflow_target',
     'is_valid_domain_query',
     'OUT_OF_DOMAIN_MESSAGE',
     'EXIT_PHRASES',
-    'GREETING_PHRASES',
-    'KNOWLEDGE_QUESTION_PATTERNS'
+    'GREETING_PHRASES'
 ]

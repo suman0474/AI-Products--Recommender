@@ -23,6 +23,7 @@ from azure_blob_utils import get_available_vendors, get_vendors_for_product_type
 from standardization_utils import standardize_ranking_result
 
 # Import LLM fallback utilities
+from config import AgenticConfig
 from llm_fallback import FallbackLLMClient
 
 # Import LangChain Runnable base class for compatibility
@@ -198,7 +199,7 @@ def setup_ai_components():
     )
 
     llm_pro = GeminiClient(
-        model_name="gemini-2.5-pro",
+        model_name=AgenticConfig.PRO_MODEL,
         temperature=0.1,
         api_key=os.getenv("GOOGLE_API_KEY1"),
         openai_api_key=openai_key

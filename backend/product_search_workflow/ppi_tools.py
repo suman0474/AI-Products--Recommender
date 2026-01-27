@@ -577,9 +577,10 @@ def generate_schema_tool(product_type: str, vendor_data: List[Dict[str, Any]]) -
         
         from loading import create_schema_from_vendor_data, _save_schema_to_specs
         from llm_fallback import create_llm_with_fallback
+        from config import AgenticConfig
         
         llm = create_llm_with_fallback(
-            model="gemini-2.5-pro",
+            model=AgenticConfig.PRO_MODEL,
             temperature=0.2,
             google_api_key=os.getenv("GOOGLE_API_KEY")
         )

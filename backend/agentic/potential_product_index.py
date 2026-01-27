@@ -24,6 +24,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from .llm_manager import get_cached_llm
+from config import AgenticConfig
 from prompts_library import load_prompt_sections
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def discover_vendors_node(state: PotentialProductIndexState) -> PotentialProduct
     
     try:
         with LLM_SEMAPHORE:
-            llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.2)
+            llm = get_cached_llm(model=AgenticConfig.PRO_MODEL, temperature=0.2)
 
             prompt = ChatPromptTemplate.from_template(VENDOR_DISCOVERY_PROMPT)
             parser = JsonOutputParser()
@@ -103,7 +104,7 @@ def discover_models_node(state: PotentialProductIndexState) -> PotentialProductI
         
         def discover_for_vendor(vendor: str) -> tuple:
             with LLM_SEMAPHORE:
-                llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.2)
+                llm = get_cached_llm(model=AgenticConfig.PRO_MODEL, temperature=0.2)
 
                 prompt = ChatPromptTemplate.from_template(MODEL_FAMILY_DISCOVERY_PROMPT)
                 parser = JsonOutputParser()
@@ -331,7 +332,7 @@ def generate_schema_node(state: PotentialProductIndexState) -> PotentialProductI
     
     try:
         with LLM_SEMAPHORE:
-            llm = get_cached_llm(model="gemini-2.5-pro", temperature=0.2)
+            llm = get_cached_llm(model=AgenticConfig.PRO_MODEL, temperature=0.2)
 
             prompt = ChatPromptTemplate.from_template(SCHEMA_GENERATION_PROMPT)
             parser = JsonOutputParser()

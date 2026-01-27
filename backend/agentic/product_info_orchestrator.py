@@ -135,18 +135,29 @@ def query_deep_agent(query: str, session_id: str) -> Dict[str, Any]:
 
 
 def query_llm_fallback(query: str, session_id: str) -> Dict[str, Any]:
-    """Use LLM directly for general questions."""
+    """
+    Use LLM directly for general questions.
+
+    Uses create_llm_with_fallback for automatic key rotation and OpenAI fallback.
+    """
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-                import os
-        llm = ChatGoogleGenerativeAI(
+        from llm_fallback import create_llm_with_fallback, invoke_with_retry_fallback
+
+        llm = create_llm_with_fallback(
             model="gemini-2.5-flash",
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            temperature=0.3,
+            skip_test=True
+        )
+
+        response = invoke_with_retry_fallback(
+            llm,
+            query,
+            max_retries=3,
+            fallback_to_openai=True,
+            model="gemini-2.5-flash",
             temperature=0.3
         )
-        
-        response = llm.invoke(query)
-        
+
         return {
             "success": True,
             "source": "llm",
@@ -367,38 +378,69 @@ def run_product_info_query(
     logger.info(f"[ORCHESTRATOR] Classification: {primary_source.value} ({confidence:.2f}) - {reasoning}")
     
     # Step 3: Determine sources to query
+    # OPTIMIZATION: Don't add LLM in parallel - use sequential fallback instead
     if primary_source == DataSource.HYBRID:
         sources = get_sources_for_hybrid(resolved_query)
+        # Remove LLM from hybrid sources - will use as sequential fallback if needed
+        sources = [s for s in sources if s != DataSource.LLM]
     else:
         sources = [primary_source]
-    
-    # Always add LLM for Knowledge Questions (standards_rag)
-    # This ensures LLM provides complete information when RAG doesn't have it
-    if primary_source == DataSource.STANDARDS_RAG and DataSource.LLM not in sources:
-        sources.append(DataSource.LLM)
-        logger.info(f"[ORCHESTRATOR] Added LLM as parallel source for knowledge question")
-    
-    # Add LLM fallback if confidence is low (for other query types)
-    if confidence < 0.5 and DataSource.LLM not in sources:
-        sources.append(DataSource.LLM)
-        logger.info(f"[ORCHESTRATOR] Added LLM fallback due to low confidence")
-    
-    logger.info(f"[ORCHESTRATOR] Sources to query: {[s.value for s in sources]}")
-    
-    # Step 4: Query sources in parallel
+
+    # Don't add LLM as parallel source - it will be used as sequential fallback
+    logger.info(f"[ORCHESTRATOR] Primary sources to query: {[s.value for s in sources]}")
+
+    # Step 4: Query primary sources (without LLM)
     results = query_sources_parallel(resolved_query, sources, session_id)
-    
-    # Step 5: Merge results
+
+    # Step 5: Check if we need LLM fallback
+    # OPTIMIZATION: Only call LLM if primary source didn't provide a good answer
+    needs_llm_fallback = False
+    primary_answer = ""
+
+    primary_key = primary_source.value
+    if primary_key in results:
+        primary_result = results[primary_key]
+        if primary_result.get("success"):
+            primary_answer = primary_result.get("answer", "").strip()
+
+    INCOMPLETE_PATTERNS = [
+        "i don't have", "i do not have", "not available in",
+        "no information about", "cannot find", "no specific information",
+        "unable to find", "couldn't find"
+    ]
+
+    if not primary_answer:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] Primary source returned empty answer - will use LLM fallback")
+    elif len(primary_answer) < 50:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] Primary answer too short ({len(primary_answer)} chars) - will use LLM fallback")
+    elif any(pattern in primary_answer.lower() for pattern in INCOMPLETE_PATTERNS):
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] Primary answer incomplete - will use LLM fallback")
+    elif confidence < 0.5:
+        needs_llm_fallback = True
+        logger.info(f"[ORCHESTRATOR] Low confidence ({confidence:.2f}) - will use LLM fallback")
+
+    # Step 5b: Query LLM only if needed (SEQUENTIAL, not parallel)
+    if needs_llm_fallback:
+        logger.info(f"[ORCHESTRATOR] Running LLM fallback sequentially...")
+        llm_result = query_llm_fallback(resolved_query, session_id)
+        results[DataSource.LLM.value] = llm_result
+    else:
+        logger.info(f"[ORCHESTRATOR] Primary answer sufficient - skipping LLM (saved 1 API call)")
+
+    # Step 6: Merge results
     merged = merge_results(results, primary_source)
-    
-    # Step 6: Save to memory
+
+    # Step 7: Save to memory
     add_to_history(
         session_id=session_id,
         query=query,
         response=merged.get("answer", ""),
         sources_used=merged.get("sources_used", [])
     )
-    
+
     # Add metadata
     merged["is_follow_up"] = is_follow_up
     merged["classification"] = {
@@ -406,5 +448,6 @@ def run_product_info_query(
         "confidence": confidence,
         "reasoning": reasoning
     }
-    
+    merged["llm_fallback_used"] = needs_llm_fallback
+
     return merged

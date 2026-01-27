@@ -119,6 +119,9 @@ def validate_all_configs() -> None:
         logger.info("[INIT]   ✓ OPENAI_API_KEY configured (fallback available)")
     else:
         logger.warning("[INIT]   ⚠ OPENAI_API_KEY not set - no LLM fallback available")
+        
+    # Phase 5: Enhanced LLM Configuration Warnings
+    _log_llm_configuration_warnings()
 
     # Validate Google Custom Search (optional)
     google_cx = os.getenv("GOOGLE_CX")
@@ -132,6 +135,61 @@ def validate_all_configs() -> None:
         error_msg = "Critical configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         logger.error(error_msg)
         raise RuntimeError(error_msg)
+
+
+def _log_llm_configuration_warnings():
+    """
+    Phase 5: Log warnings about LLM configuration to help users avoid rate limit issues.
+    """
+    google_keys = []
+    # Check for multiple Google API keys
+    for i in range(1, 10):
+        key_name = f"GOOGLE_API_KEY{i}" if i > 1 else "GOOGLE_API_KEY"
+        key = os.getenv(key_name)
+        if key:
+            google_keys.append(key_name)
+    
+    openai_key = os.getenv("OPENAI_API_KEY")
+    
+    # Log summary
+    logger.info("="*70)
+    logger.info("[INIT] 📊 LLM Configuration Summary:")
+    logger.info(f"[INIT]   • Google API keys available: {len(google_keys)}")
+    logger.info(f"[INIT]   • OpenAI fallback configured: {'Yes ✓' if openai_key else 'No ✗'}")
+    
+    # Warnings based on configuration
+    warning_count = 0
+    
+    # Warning 1: No OpenAI fallback
+    if not openai_key:
+        warning_count += 1
+        logger.warning(f"[INIT]   ⚠️ WARNING {warning_count}: No OpenAI fallback configured!")
+        logger.warning(f"[INIT]      • Gemini free tier has strict rate limits (20 req/min)")
+        logger.warning(f"[INIT]      • Add OPENAI_API_KEY to .env for automatic fallback")
+    
+    # Warning 2: Only one Google key
+    if len(google_keys) == 1:
+        warning_count += 1
+        logger.warning(f"[INIT]   ⚠️ WARNING {warning_count}: Only 1 Google API key configured")
+        logger.warning(f"[INIT]      • Consider adding GOOGLE_API_KEY2, GOOGLE_API_KEY3 for rotation")
+        logger.warning(f"[INIT]      • Multiple keys help avoid rate limit errors")
+    
+    # Warning 3: No API keys at all
+    if len(google_keys) == 0 and not openai_key:
+        warning_count += 1
+        logger.warning(f"[INIT]   ❌ CRITICAL WARNING {warning_count}: No LLM API keys configured!")
+        logger.warning(f"[INIT]      • The application will not function without LLM access")
+        logger.warning(f"[INIT]      • Add GOOGLE_API_KEY or OPENAI_API_KEY to .env")
+    
+    # Recommendations
+    if warning_count > 0:
+        logger.info("[INIT]   📋 Recommended configuration for production:")
+        logger.info("[INIT]      • GOOGLE_API_KEY + GOOGLE_API_KEY2 + GOOGLE_API_KEY3")
+        logger.info("[INIT]      • OPENAI_API_KEY (for reliable fallback)")
+    else:
+        logger.info("[INIT]   ✓ LLM configuration looks good!")
+    
+    logger.info("="*70)
 
 
 def initialize_singletons() -> None:
@@ -162,8 +220,9 @@ def initialize_singletons() -> None:
     # Initialize Azure Blob Manager (if configured)
     try:
         from azure_blob_config import azure_blob_manager
-        if azure_blob_manager.is_configured():
-            azure_blob_manager.get_container_client()
+        if azure_blob_manager.is_available:
+            # Use the property to trigger lazy initialization
+            _ = azure_blob_manager.container_client
             logger.info("[INIT]   ✓ Azure Blob Manager connected")
         else:
             logger.warning("[INIT]   ⚠ Azure Blob Manager not configured (optional)")

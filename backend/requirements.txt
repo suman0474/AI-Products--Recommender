@@ -144,7 +144,7 @@ azure-storage-blob>=12.19.0
 azure-identity>=1.15.0
 python-docx>=1.1.0
 # easyocr removed to avoid heavy PyTorch dependency
-flasgger>=0.9.7
+
 fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.21.0
 

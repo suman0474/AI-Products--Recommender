@@ -36,7 +36,25 @@ class LLMManager:
 
         Returns:
             LLM instance (cached if previously created)
+            
+        Note:
+            Phase 4: If the requested model's quota is exhausted, this will
+            automatically try to return a fallback model instead.
         """
+        from llm_fallback import is_model_quota_exhausted
+        from config import AgenticConfig
+        
+        original_model = model
+        
+        # Phase 4: Check if model quota is exhausted and auto-downgrade
+        if is_model_quota_exhausted(model):
+            fallback = AgenticConfig.FALLBACK_MODEL
+            logger.warning(f"[LLM_CACHE] Model {model} quota exhausted, auto-downgrading to {fallback}")
+            model = fallback
+            # Don't downgrade if fallback is also exhausted (let create_llm_with_fallback handle OpenAI fallback)
+            if is_model_quota_exhausted(model):
+                logger.warning(f"[LLM_CACHE] Fallback {model} also exhausted, will use OpenAI fallback")
+        
         # Create cache key from model and temperature
         cache_key = f"{model}_{temperature}"
 
@@ -51,7 +69,10 @@ class LLMManager:
                     **kwargs
                 )
             else:
-                logger.debug(f"[LLM_CACHE] Using cached LLM: {cache_key}")
+                if model != original_model:
+                    logger.info(f"[LLM_CACHE] Using cached fallback LLM: {cache_key} (requested: {original_model})")
+                else:
+                    logger.debug(f"[LLM_CACHE] Using cached LLM: {cache_key}")
 
             return self._cache[cache_key]
 
