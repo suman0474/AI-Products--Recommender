@@ -29,11 +29,22 @@ from tools.ranking_tools import rank_products_tool
 import os
 logger = logging.getLogger(__name__)
 
+# Import debug utilities
+try:
+    from debug_flags import debug_langgraph_node, timed_execution, is_debug_enabled
+except ImportError:
+    # Graceful fallback if debug_flags not available
+    debug_langgraph_node = lambda *a, **kw: lambda f: f
+    timed_execution = lambda *a, **kw: lambda f: f
+    is_debug_enabled = lambda m: False
+
 
 # ============================================================================
 # WORKFLOW NODES (State Transformations)
 # ============================================================================
 
+@debug_langgraph_node("AGENTIC_WORKFLOW", "classify_intent")
+@timed_execution("AGENTIC_WORKFLOW", threshold_ms=2000)
 def classify_intent_node(state: WorkflowState) -> WorkflowState:
     """
     Node: Classify user intent
@@ -85,6 +96,8 @@ def classify_intent_node(state: WorkflowState) -> WorkflowState:
     return state
 
 
+@debug_langgraph_node("AGENTIC_WORKFLOW", "validate_requirements")
+@timed_execution("AGENTIC_WORKFLOW", threshold_ms=5000)
 def validate_requirements_node(state: WorkflowState) -> WorkflowState:
     """
     Node: Validate user requirements

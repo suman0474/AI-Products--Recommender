@@ -113,6 +113,7 @@ const App = () => (
               <Route path="/project" element={<Navigate to="/solution" replace />} />
               <Route path="/engenie-chat" element={<Navigate to="/chat" replace />} />
               <Route path="/upload" element={<Navigate to="/solution/upload" replace />} />
+              <Route path="/search" element={<Navigate to="/solution/search" replace />} />
 
               {/* Protected dashboard route */}
               <Route

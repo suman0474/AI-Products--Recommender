@@ -265,10 +265,12 @@ def _load_cached_specifications(product_type: str) -> Optional[List[Dict[str, An
         )
         if doc:
             specs = doc.get("unique_specifications")
-            if isinstance(specs, list):
+            if isinstance(specs, list) and specs:
                 logging.info(f"Advanced parameters cache hit for {product_type}")
                 _set_in_memory_specs(product_type, specs)
                 return specs
+            elif isinstance(specs, list) and not specs:
+                logging.info(f"Advanced parameters cache hit (empty) for {product_type} - ignoring to allow retry")
     except Exception as exc:
         logging.warning(f"Unable to read advanced parameters cache for {product_type}: {exc}")
 
@@ -508,7 +510,10 @@ Rules:
             f"Advanced specifications (single-call) discovery complete: {len(unique_specifications)} new specifications returned"
         )
 
-        _persist_specifications(product_type, unique_specifications, existing_list)
+        if unique_specifications:
+            _persist_specifications(product_type, unique_specifications, existing_list)
+        else:
+             logging.info(f"No unique specifications found for {product_type}. Skipping persistence to allow retry.")
 
         return _build_response(product_type, unique_specifications)
     except Exception as e:

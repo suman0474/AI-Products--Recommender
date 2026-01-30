@@ -1111,6 +1111,12 @@ const AIRecommender = ({
     }
   };
 
+  // NEW: Handler for populating input without auto-submitting
+  const handlePopulateInput = useCallback((sampleInput: string) => {
+    setState((prev) => ({ ...prev, inputValue: sampleInput }));
+    // Optional: focus logic is handled by the textarea ref in ChatInterface if passed down, 
+    // but here we just set state. The textarea value comes from props.
+  }, []);
 
   // --- New workflow-aware message handler ---
   const handleSendMessage = useCallback(
@@ -2203,6 +2209,7 @@ const AIRecommender = ({
             onPricingDataUpdate={handlePricingDataUpdate}
             identifiedItems={state.identifiedItems}
             onRunSearch={handleRunProductSearch}
+            onPopulateInput={handlePopulateInput}
           />
         </div>
       </div>

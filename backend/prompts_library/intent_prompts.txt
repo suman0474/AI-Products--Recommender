@@ -1,10 +1,4 @@
-# =============================================================================
-# INTENT PROMPTS
-# =============================================================================
-# SOURCE FILES: backend/tools/intent_tools.py,
-#               backend/agentic/intent_classification_routing_agent.py
-# CONTAINS: CLASSIFICATION, REQUIREMENTS_EXTRACTION, ROUTING_PATTERNS, OUT_OF_DOMAIN
-# =============================================================================
+
 
 === PROMPT: CLASSIFICATION ===
 PURPOSE: Classifies user input with detailed rules for routing

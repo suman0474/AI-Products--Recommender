@@ -14,6 +14,12 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Debug flag integration
+try:
+    from debug_flags import issue_debug
+except ImportError:
+    issue_debug = None
+
 
 class WorkflowType(Enum):
     """Target workflow types for routing."""
@@ -126,6 +132,7 @@ class SemanticIntentClassifier:
         self._embeddings = None
         self._signature_cache: Dict[str, List[float]] = {}
         self._initialized = False
+        self._signatures_precomputed = False
         
     def _get_embeddings(self):
         """Lazy-load embedding model."""
@@ -159,8 +166,10 @@ class SemanticIntentClassifier:
         except ImportError:
             pass
         
-        # Compute embedding
+        # Compute embedding - track API call
         embeddings = self._get_embeddings()
+        if issue_debug:
+            issue_debug.embedding_call("embedding-001", 1, "semantic_classifier")
         embedding = embeddings.embed_query(text)
         
         # Cache it
@@ -173,6 +182,36 @@ class SemanticIntentClassifier:
             pass
             
         return embedding
+    
+    def _precompute_signature_embeddings(self):
+        """
+        Pre-compute all signature embeddings once at startup.
+        Reduces 31 API calls per classification to 0 (all cached).
+        """
+        if self._signatures_precomputed:
+            return
+        
+        all_signatures = ENGENIE_CHAT_SIGNATURES + SOLUTION_WORKFLOW_SIGNATURES
+        cached_count = 0
+        computed_count = 0
+        
+        logger.info(f"[SEMANTIC] Pre-computing {len(all_signatures)} signature embeddings...")
+        
+        for sig in all_signatures:
+            if sig in self._signature_cache:
+                cached_count += 1
+            else:
+                try:
+                    self._compute_embedding(sig)
+                    computed_count += 1
+                except Exception as e:
+                    logger.warning(f"[SEMANTIC] Failed to cache signature: {e}")
+        
+        self._signatures_precomputed = True
+        logger.info(
+            f"[SEMANTIC] Signature embeddings ready: "
+            f"{cached_count} cached, {computed_count} computed"
+        )
     
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
         """Compute cosine similarity between two vectors using pure Python."""
@@ -271,6 +310,10 @@ class SemanticIntentClassifier:
             ClassificationResult with workflow, confidence, and matched signature
         """
         try:
+            # Pre-compute signature embeddings if not done yet
+            if not self._signatures_precomputed:
+                self._precompute_signature_embeddings()
+            
             # Compute query embedding
             query_embedding = self._compute_embedding(query)
             

@@ -103,7 +103,8 @@ export type RightPanelProps = {
   validationResult?: ValidationResult;
   requirementSchema?: RequirementSchema;
   identifiedItems?: IdentifiedItem[] | null; // Added
-  onRunSearch?: (sampleInput: string) => void; // Added
+  onRunSearch?: (sampleInput: string) => void; // Deprecated - use onPopulateInput
+  onPopulateInput?: (sampleInput: string) => void; // NEW: Populate input without auto-submit
   isDocked: boolean;
   setIsDocked: React.Dispatch<React.SetStateAction<boolean>>;
   onPricingDataUpdate?: (priceReviewMap: Record<string, PriceReview>) => void;
@@ -127,7 +128,8 @@ const RightPanel: React.FC<RightPanelProps> = ({
   validationResult,
   requirementSchema,
   identifiedItems,
-  onRunSearch,
+  onRunSearch, // Deprecated
+  onPopulateInput, // NEW
   isDocked,
   setIsDocked,
   onPricingDataUpdate
@@ -524,11 +526,11 @@ const RightPanel: React.FC<RightPanelProps> = ({
 
               <div className="mt-4 flex items-center justify-end gap-3">
                 <Button
-                  onClick={() => onRunSearch && item.sampleInput && onRunSearch(item.sampleInput)}
+                  onClick={() => onPopulateInput && item.sampleInput && onPopulateInput(item.sampleInput)}
                   className="gap-2 shadow-lg hover:shadow-xl transition-all hover:scale-105 active:scale-95 font-semibold"
                 >
                   <Play className="w-4 h-4 fill-current" />
-                  Run Product Search
+                  Populate Input
                 </Button>
               </div>
             </div>

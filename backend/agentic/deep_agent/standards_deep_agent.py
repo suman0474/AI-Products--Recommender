@@ -40,6 +40,15 @@ from ..llm_manager import get_cached_llm
 from prompts_library import load_prompt, load_prompt_sections
 logger = logging.getLogger(__name__)
 
+# Import debug utilities
+try:
+    from debug_flags import debug_log, timed_execution_async, is_debug_enabled
+except ImportError:
+    # Graceful fallback
+    debug_log = lambda *a, **kw: lambda f: f
+    timed_execution_async = lambda *a, **kw: lambda f: f
+    is_debug_enabled = lambda m: False
+
 
 # ============================================================================
 # PERFORMANCE OPTIMIZATIONS (P0.3) - Document Caching & Request Throttling
@@ -71,6 +80,7 @@ class APIRequestThrottler:
         self.total_time = 0.0
         self.lock = Lock()
 
+    @debug_log("DEEP_AGENT", log_args=False)
     def call_with_throttle(self, llm, prompt, max_retries=3):
         """
         Call LLM with automatic throttling and retry logic.

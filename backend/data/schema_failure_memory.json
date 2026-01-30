@@ -1182,6 +1182,48 @@
         "duration_ms": 33707,
         "sources_used": []
       }
+    ],
+    "Discharge Pressure Transmitter": [
+      {
+        "success_id": "succ_Discharge Pressure Transmitter_20260129165559506680",
+        "product_type": "Discharge Pressure Transmitter",
+        "prompt_hash": "b44e6b3d45afff37",
+        "prompt_preview": "[parallel generation]",
+        "fields_populated": 1,
+        "total_fields": 60,
+        "confidence_score": 0.016666666666666666,
+        "timestamp": "2026-01-29T16:55:59.506716",
+        "duration_ms": 28860,
+        "sources_used": []
+      }
+    ],
+    "Mechanical Seal Flush Flow Transmitter": [
+      {
+        "success_id": "succ_Mechanical Seal Flush Flow Transmitter_20260129165756219785",
+        "product_type": "Mechanical Seal Flush Flow Transmitter",
+        "prompt_hash": "b44e6b3d45afff37",
+        "prompt_preview": "[parallel generation]",
+        "fields_populated": 1,
+        "total_fields": 60,
+        "confidence_score": 0.016666666666666666,
+        "timestamp": "2026-01-29T16:57:56.219838",
+        "duration_ms": 51875,
+        "sources_used": []
+      }
+    ],
+    "Overpressure Protection Relief Valve": [
+      {
+        "success_id": "succ_Overpressure Protection Relief Valve_20260129171215521756",
+        "product_type": "Overpressure Protection Relief Valve",
+        "prompt_hash": "b44e6b3d45afff37",
+        "prompt_preview": "[parallel generation]",
+        "fields_populated": 0,
+        "total_fields": 60,
+        "confidence_score": 0.0,
+        "timestamp": "2026-01-29T17:12:15.521825",
+        "duration_ms": 43732,
+        "sources_used": []
+      }
     ]
   },
   "optimized_prompts": {
@@ -1192,10 +1234,10 @@
   },
   "stats": {
     "total_failures": 37,
-    "total_successes": 41,
+    "total_successes": 44,
     "patterns_detected": 1,
     "recoveries_attempted": 0,
     "recoveries_successful": 0
   },
-  "saved_at": "2026-01-29T15:55:56.025513"
+  "saved_at": "2026-01-29T17:12:15.527779"
 }

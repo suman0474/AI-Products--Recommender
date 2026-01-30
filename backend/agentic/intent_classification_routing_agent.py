@@ -15,11 +15,15 @@ Usage:
 """
 
 import logging
+import time
 from typing import Dict, Optional, Any
 from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
+
+# Debug imports
+from debug_flags import debug_log, timed_execution, is_debug_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -425,15 +429,17 @@ class IntentClassificationRoutingAgent:
         # Default: consider relevant to respect workflow lock
         return True
 
+    @debug_log("INTENT_ROUTER", log_args=False)
+    @timed_execution("INTENT_ROUTER", threshold_ms=2000)
     def classify(
-        self, 
-        query: str, 
+        self,
+        query: str,
         session_id: str = "default",
         context: Optional[Dict] = None
     ) -> WorkflowRoutingResult:
         """
         Classify a query and determine which workflow to route to.
-        
+
         SMART LOCKING:
         - Helper logic checks if the user is stuck in a workflow.
         - Strong intents (greeting, new solution) BREAK the lock.

@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 # Import prompt loader
 from prompts_library import load_prompt_sections
 
+# Import debug utilities
+try:
+    from debug_flags import debug_log, timed_execution, is_debug_enabled
+except ImportError:
+    # Graceful fallback
+    debug_log = lambda *a, **kw: lambda f: f
+    timed_execution = lambda *a, **kw: lambda f: f
+    is_debug_enabled = lambda m: False
+
 
 # ============================================================================
 # PROMPTS - Loaded from consolidated prompts_library file
@@ -74,13 +83,15 @@ class IndexRAGAgent:
         
         logger.info("[IndexRAGAgent] Initialized with Gemini Flash")
     
+    @debug_log("INDEX_RAG", log_args=False)
+    @timed_execution("INDEX_RAG", threshold_ms=3000)
     def classify_intent(self, query: str) -> Dict[str, Any]:
         """
         Classify user intent using LLM.
-        
+
         Args:
             query: User's search query
-            
+
         Returns:
             Classified intent with extracted metadata
         """

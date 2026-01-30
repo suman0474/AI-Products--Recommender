@@ -26,6 +26,9 @@ from typing import Dict, Optional, List, Any
 from dataclasses import dataclass, field
 import logging
 
+# Debug imports
+from debug_flags import debug_log, timed_execution, is_debug_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,6 +170,8 @@ class SessionOrchestrator:
     # CORE SESSION OPERATIONS
     # ========================================================================
 
+    @debug_log("SESSION_ORCHESTRATOR", log_args=False)
+    @timed_execution("SESSION_ORCHESTRATOR", threshold_ms=100)
     def get_or_create_session(
         self,
         user_id: str,
@@ -219,6 +224,7 @@ class SessionOrchestrator:
         # No existing session found - create new one
         return self.create_session(user_id, main_thread_id, is_saved, zone, metadata)
 
+    @debug_log("SESSION_ORCHESTRATOR", log_args=False)
     def create_session(
         self,
         user_id: str,
@@ -287,6 +293,7 @@ class SessionOrchestrator:
 
             return session
 
+    @debug_log("SESSION_ORCHESTRATOR")
     def get_session_context(self, main_thread_id: str) -> Optional[SessionContext]:
         """
         Retrieve session by main_thread_id
@@ -311,6 +318,7 @@ class SessionOrchestrator:
                 return session
             return None
 
+    @debug_log("SESSION_ORCHESTRATOR")
     def heartbeat(self, main_thread_id: str) -> bool:
         """
         Update session's last activity (called every 5 minutes from frontend)
@@ -338,6 +346,7 @@ class SessionOrchestrator:
                 )
                 return False
 
+    @debug_log("SESSION_ORCHESTRATOR")
     def end_session(self, main_thread_id: str) -> Optional[SessionContext]:
         """
         End session (called on user logout)

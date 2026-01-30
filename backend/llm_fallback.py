@@ -13,6 +13,15 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 
+# Issue-specific debug logging for terminal log analysis
+try:
+    from debug_flags import issue_debug, debug_log, timed_execution, is_debug_enabled
+except ImportError:
+    issue_debug = None  # Fallback if debug_flags not available
+    debug_log = lambda *a, **kw: lambda f: f  # No-op decorator
+    timed_execution = lambda *a, **kw: lambda f: f  # No-op decorator
+    is_debug_enabled = lambda m: False
+
 # PHASE 1 FIX: Use centralized API Key Manager
 # Replaces global state with thread-safe singleton
 try:
@@ -57,6 +66,8 @@ def rotate_google_api_key() -> bool:
 # Log available keys at startup
 if len(GOOGLE_API_KEYS) > 1:
     logger.info(f"[LLM_FALLBACK] 🔑 Loaded {len(GOOGLE_API_KEYS)} Google API keys for rotation")
+    if issue_debug:
+        issue_debug._log("API_KEY", f"INIT: Loaded {len(GOOGLE_API_KEYS)} keys for rotation")
 
 # Model mappings: Gemini -> OpenAI equivalent
 MODEL_MAPPINGS = {
@@ -139,6 +150,83 @@ def get_rate_limit_status() -> dict:
             "quota_exhausted": now < _rate_tracker["quota_exhausted_until"],
             "quota_reset_in": max(0, int(_rate_tracker["quota_exhausted_until"] - now))
         }
+
+
+# ============================================================================
+# DIRECT OPENAI WRAPPER (FALLBACK FOR TIKTOKEN ISSUES)
+# ============================================================================
+# When LangChain's ChatOpenAI fails due to tiktoken circular imports,
+# this wrapper provides a compatible interface using the direct OpenAI client.
+
+class DirectOpenAIWrapper:
+    """
+    LangChain-compatible wrapper for direct OpenAI API calls.
+    
+    Used as a fallback when LangChain's ChatOpenAI fails to initialize
+    (e.g., due to tiktoken circular import issues on Windows).
+    """
+    
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini", 
+                 temperature: float = 0.1, max_tokens: int = 4096):
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self._client = None
+    
+    def _get_client(self):
+        """Lazy-load OpenAI client."""
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI(api_key=self.api_key)
+        return self._client
+    
+    def invoke(self, messages, **kwargs):
+        """
+        LangChain-compatible invoke method.
+        
+        Accepts either:
+        - A string prompt
+        - A list of LangChain message objects
+        - A list of OpenAI message dicts
+        """
+        client = self._get_client()
+        
+        # Convert LangChain messages to OpenAI format
+        openai_messages = []
+        if isinstance(messages, str):
+            openai_messages = [{"role": "user", "content": messages}]
+        elif isinstance(messages, list):
+            for msg in messages:
+                if hasattr(msg, 'type') and hasattr(msg, 'content'):
+                    # LangChain HumanMessage/AIMessage/SystemMessage
+                    role = "assistant" if msg.type == "ai" else ("system" if msg.type == "system" else "user")
+                    openai_messages.append({"role": role, "content": msg.content})
+                elif isinstance(msg, dict):
+                    openai_messages.append(msg)
+        
+        # Make API call
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=openai_messages,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+        
+        # Return content in a LangChain-compatible format
+        content = response.choices[0].message.content
+        
+        # Create a simple object that has .content attribute
+        class AIMessageLike:
+            def __init__(self, content):
+                self.content = content
+                self.type = "ai"
+        
+        return AIMessageLike(content)
+    
+    def __call__(self, messages, **kwargs):
+        """Make wrapper callable like LangChain LLM."""
+        return self.invoke(messages, **kwargs)
 
 
 # ============================================================================
@@ -546,6 +634,8 @@ class LLMWithFallback(Runnable):
         return getattr(self.primary_llm, name)
 
 
+@debug_log("LLM_FALLBACK", log_args=False)
+@timed_execution("LLM_FALLBACK", threshold_ms=5000)
 def create_llm_with_fallback(
     model: str = "gemini-2.5-flash",
     temperature: float = 0.1,
@@ -615,7 +705,30 @@ def create_llm_with_fallback(
             logger.info(f"[LLM_FALLBACK] Fallback LLM wrapped with {effective_timeout}s timeout")
                 
         except Exception as e:
+            error_str = str(e).lower()
             logger.warning(f"[LLM_FALLBACK] Failed to init Fallback ({model}): {e}")
+            
+            # Log tiktoken circular import issues for debugging
+            if issue_debug and 'tiktoken' in error_str:
+                issue_debug.tiktoken_init_error(str(e)[:100])
+            if issue_debug and 'circular' in error_str:
+                issue_debug.tiktoken_circular_import('llm_fallback')
+            
+            # FIX: Fallback to direct OpenAI client when LangChain fails (tiktoken issue)
+            if 'tiktoken' in error_str or 'circular' in error_str or 'import' in error_str:
+                logger.info("[LLM_FALLBACK] Attempting direct OpenAI client (bypassing LangChain)...")
+                try:
+                    from openai import OpenAI
+                    # Create a wrapper that mimics LangChain interface
+                    fallback_llm = DirectOpenAIWrapper(
+                        api_key=openai_key,
+                        model=get_openai_equivalent(model),
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    logger.info("[LLM_FALLBACK] ✓ Direct OpenAI client initialized successfully")
+                except Exception as direct_e:
+                    logger.error(f"[LLM_FALLBACK] Direct OpenAI also failed: {direct_e}")
 
     # 3. Construct Final Runnable
     if primary_llm:
@@ -760,6 +873,8 @@ class FallbackLLMClient:
                 self.client_type = 'gemini'
                 self._current_key_idx = next_idx
                 logger.info(f"[FallbackLLMClient] 🔄 Rotated to key #{next_idx + 1}/{len(self._google_api_keys)}")
+                if issue_debug:
+                    issue_debug.api_key_rotated(start_idx, next_idx, "quota_error")
                 return True
             except Exception as e:
                 self._current_key_idx = next_idx
@@ -870,6 +985,8 @@ class FallbackLLMClient:
         raise RuntimeError("LLM invocation failed after retries")
 
 
+@debug_log("LLM_FALLBACK", log_args=False)
+@timed_execution("LLM_FALLBACK", threshold_ms=30000)
 def invoke_with_retry_fallback(
     chain_or_llm: Any,
     input_data: dict,
@@ -1018,11 +1135,13 @@ def invoke_with_retry_fallback(
 
 
 # Convenience functions
+@debug_log("LLM_FALLBACK")
 def get_default_llm(temperature: float = 0.1, model: str = "gemini-2.5-flash") -> Any:
     """Get a default LLM instance with fallback"""
     return create_llm_with_fallback(model=model, temperature=temperature)
 
 
+@debug_log("LLM_FALLBACK")
 def get_llm_for_task(task_type: str = "general", temperature: float = 0.1) -> Any:
     """
     Get an LLM optimized for a specific task type

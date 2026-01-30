@@ -65,10 +65,79 @@ class APIKeyManager:
         self._openai_key = os.getenv("OPENAI_API_KEY")
         self._current_index = 0
         self._rotation_lock = threading.Lock()
+        self._compromised_keys = set()  # Track leaked/blocked keys
 
         logger.info(f"[APIKeyManager] Initialized with {len(self._google_keys)} Google key(s)")
         if self._openai_key:
             logger.info("[APIKeyManager] OpenAI key available for fallback")
+
+    def handle_api_error(self, error: Exception, current_key: str = None) -> bool:
+        """
+        Handle API errors and detect leaked/compromised keys.
+        
+        Args:
+            error: The exception from the API call
+            current_key: The key that was used (optional, uses current if not provided)
+            
+        Returns:
+            True if key was rotated and caller should retry, False otherwise
+        """
+        error_str = str(error).lower()
+        
+        # Import debug logging if available
+        try:
+            from debug_flags import issue_debug
+        except ImportError:
+            issue_debug = None
+        
+        # Detect leaked key (critical security issue)
+        if "leaked" in error_str or "compromised" in error_str:
+            key_to_remove = current_key or self.get_current_google_key()
+            if key_to_remove:
+                key_preview = key_to_remove[:8] + "..." if key_to_remove else "unknown"
+                logger.critical(f"[SECURITY] API key flagged as LEAKED: {key_preview}")
+                
+                if issue_debug:
+                    issue_debug.api_key_leaked(key_preview, str(error)[:100])
+                
+                self._remove_compromised_key(key_to_remove)
+                return self.rotate_google_key()  # Try next key
+        
+        # Detect quota exhaustion (not a security issue, but needs rotation)
+        if "429" in str(error) or "resource exhausted" in error_str or "quota" in error_str:
+            if issue_debug:
+                issue_debug.api_key_exhausted(self._current_index, retry_after=60)
+            return self.rotate_google_key()
+        
+        return False
+    
+    def _remove_compromised_key(self, key: str) -> bool:
+        """
+        Remove a compromised key from the rotation pool.
+        
+        Args:
+            key: The API key to remove
+            
+        Returns:
+            True if key was removed, False if not found
+        """
+        with self._rotation_lock:
+            if key in self._google_keys:
+                self._compromised_keys.add(key)
+                self._google_keys.remove(key)
+                logger.warning(
+                    f"[APIKeyManager] Removed compromised key from pool. "
+                    f"Remaining keys: {len(self._google_keys)}"
+                )
+                # Adjust current index if needed
+                if self._current_index >= len(self._google_keys) and self._google_keys:
+                    self._current_index = 0
+                return True
+            return False
+    
+    def get_compromised_key_count(self) -> int:
+        """Get count of keys removed due to being compromised."""
+        return len(self._compromised_keys)
 
     def _load_google_keys(self) -> List[str]:
         """

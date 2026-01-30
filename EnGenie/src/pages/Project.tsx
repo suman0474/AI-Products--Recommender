@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/tooltip";
 import AIRecommender from "@/components/AIRecommender";
 import { useAuth } from '@/contexts/AuthContext';
+import { useScreenPersistence } from '@/hooks/use-screen-persistence';
 import ProjectListDialog from '@/components/ProjectListDialog';
 import '../components/TabsLayout.css';
 import {
@@ -346,89 +347,14 @@ const Project = () => {
     // PERSISTENCE LOGIC (IndexedDB + LocalStorage)
     // =================================================================================================
 
-    const PROJECT_DB_NAME = 'project_page_db';
-    const PROJECT_STORE_NAME = 'project_state';
-    const PROJECT_STATE_KEY = 'current_project_session';
-    const PROJECT_BACKUP_KEY = 'project_page_state_backup';
 
-    const openProjectDB = (): Promise<IDBDatabase> => {
-        return new Promise((resolve, reject) => {
-            const request = indexedDB.open(PROJECT_DB_NAME, 1);
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve(request.result);
-            request.onupgradeneeded = (event) => {
-                const db = (event.target as IDBOpenDBRequest).result;
-                if (!db.objectStoreNames.contains(PROJECT_STORE_NAME)) {
-                    db.createObjectStore(PROJECT_STORE_NAME, { keyPath: 'id' });
-                }
-            };
-        });
-    };
-
-    const saveStateToProjectDB = async (state: any): Promise<void> => {
-        try {
-            const db = await openProjectDB();
-            const transaction = db.transaction(PROJECT_STORE_NAME, 'readwrite');
-            const store = transaction.objectStore(PROJECT_STORE_NAME);
-            await new Promise<void>((resolve, reject) => {
-                const request = store.put({ id: PROJECT_STATE_KEY, ...state });
-                request.onsuccess = () => resolve();
-                request.onerror = () => reject(request.error);
-            });
-            db.close();
-
-            // Backup to local storage (lighter version if needed, or full if fits)
-            // We use a try-catch for localStorage incase of quota exceeded
-            try {
-                // Only save essential metadata to localStorage to avoid quota limits
-                const backupState = {
-                    projectName: state.projectName,
-                    currentProjectId: state.currentProjectId,
-                    timestamp: new Date().toISOString()
-                };
-                localStorage.setItem(PROJECT_BACKUP_KEY, JSON.stringify(backupState));
-            } catch (e) {
-                console.warn('[PERSISTENCE] LocalStorage backup failed:', e);
-            }
-        } catch (e) {
-            console.warn('[PERSISTENCE] Failed to save to IndexedDB:', e);
-        }
-    };
-
-    const loadStateFromProjectDB = async (): Promise<any | null> => {
-        try {
-            const db = await openProjectDB();
-            const transaction = db.transaction(PROJECT_STORE_NAME, 'readonly');
-            const store = transaction.objectStore(PROJECT_STORE_NAME);
-            const result = await new Promise<any>((resolve, reject) => {
-                const request = store.get(PROJECT_STATE_KEY);
-                request.onsuccess = () => resolve(request.result);
-                request.onerror = () => reject(request.error);
-            });
-            db.close();
-
-            // Fix date objects restoration
-            if (result) {
-                if (result.chatMessages) {
-                    result.chatMessages = result.chatMessages.map((msg: any) => ({
-                        ...msg,
-                        timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date()
-                    }));
-                }
-            }
-            return result || null;
-        } catch (e) {
-            console.warn('[PERSISTENCE] Failed to load from IndexedDB:', e);
-            return null;
-        }
-    };
 
     // State ref to access latest state in event listeners (like beforeunload)
     const stateRef = useRef({
-        requirements: '',
+        requirements,
         instruments: [] as IdentifiedInstrument[],
         accessories: [] as IdentifiedAccessory[],
-        showResults: false,
+        showResults,
         activeTab: 'project',
         searchTabs: [] as any[],
         projectName: 'Project',
@@ -439,6 +365,37 @@ const Project = () => {
         tabStates: {} as Record<string, any>,
         savedScrollPosition: 0,
         fieldDescriptions: {} as Record<string, string>
+    });
+
+    // TRANSFORM function for Backup (lighter state)
+    const transformForBackup = useMemo(() => (state: any) => {
+        return {
+            projectName: state.projectName,
+            currentProjectId: state.currentProjectId,
+            timestamp: new Date().toISOString()
+        };
+    }, []);
+
+    // ONLOAD function for restoring Date objects
+    const onLoad = useMemo(() => (state: any) => {
+        if (state.chatMessages) {
+            state.chatMessages = state.chatMessages.map((msg: any) => ({
+                ...msg,
+                timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date()
+            }));
+        }
+        return state;
+    }, []);
+
+    // CONFIG: Persistence Hook
+    const { saveState } = useScreenPersistence(stateRef, {
+        dbName: 'project_page_db',
+        storeName: 'project_state',
+        key: 'current_project_session',
+        backupKey: 'project_page_state_backup',
+        enableAutoSave: true,   // Keeps 30s interval
+        transformForBackup,     // Use lighter backup for LocalStorage
+        onLoad
     });
 
     // Update stateRef whenever relevant state changes
@@ -465,97 +422,6 @@ const Project = () => {
         isRightDocked, genericImages, tabStates, fieldDescriptions
     ]);
 
-    // Load state on mount
-    useEffect(() => {
-        /* 
-        DISABLED: User requested that previously stored session should NOT open automatically.
-        Session should only be restored via explicit user interaction (e.g. Open Project button).
-        
-        const loadState = async () => {
-            const savedState = await loadStateFromProjectDB();
-            if (savedState) {
-                console.log('[PERSISTENCE] Restoring state from IndexedDB...');
-
-                // Restore state
-                if (savedState.requirements) setRequirements(savedState.requirements);
-                if (savedState.instruments) setInstruments(savedState.instruments);
-                if (savedState.accessories) setAccessories(savedState.accessories);
-                if (savedState.showResults) setShowResults(savedState.showResults);
-                if (savedState.activeTab) setActiveTab(savedState.activeTab);
-                if (savedState.searchTabs) setSearchTabs(savedState.searchTabs);
-                if (savedState.projectName) setProjectName(savedState.projectName);
-                if (savedState.currentProjectId) setCurrentProjectId(savedState.currentProjectId);
-                if (savedState.chatMessages) {
-                    setChatMessages(savedState.chatMessages);
-                    // Disable history animation for restored messages
-                    isHistoryRef.current = true;
-                }
-                if (savedState.isRightDocked !== undefined) setIsRightDocked(savedState.isRightDocked);
-                if (savedState.genericImages) setGenericImages(savedState.genericImages);
-                if (savedState.tabStates) setTabStates(savedState.tabStates);
-                if (savedState.fieldDescriptions) setFieldDescriptions(savedState.fieldDescriptions);
-
-                // Restore scroll position
-                if (savedState.savedScrollPosition) {
-                    setSavedScrollPosition(savedState.savedScrollPosition);
-                    // Attempt to restore immediately and also after render
-                    setTimeout(() => {
-                        if (projectScrollRef.current) {
-                            projectScrollRef.current.scrollTop = savedState.savedScrollPosition;
-                        }
-                    }, 100);
-                }
-
-                toast({
-                    title: "Session Restored",
-                    description: "Your previous session has been restored.",
-                    duration: 3000
-                });
-            }
-        };
-
-        loadState(); 
-        */
-    }, []); // Run once on mount
-
-    // Save state on unload
-    useEffect(() => {
-        const handleBeforeUnload = () => {
-            // Capture current scroll position one last time
-            const scrollTop = projectScrollRef.current ? projectScrollRef.current.scrollTop : 0;
-
-            const stateToSave = {
-                ...stateRef.current,
-                savedScrollPosition: scrollTop,
-                savedAt: new Date().toISOString()
-            };
-
-            saveStateToProjectDB(stateToSave);
-        };
-
-        window.addEventListener('beforeunload', handleBeforeUnload);
-
-        // Also save periodically (every 30 seconds) to prevent data loss on crash
-        const autoSaveInterval = setInterval(() => {
-            // Capture current scroll position
-            const scrollTop = projectScrollRef.current ? projectScrollRef.current.scrollTop : 0;
-
-            const stateToSave = {
-                ...stateRef.current,
-                savedScrollPosition: scrollTop,
-                savedAt: new Date().toISOString()
-            };
-            saveStateToProjectDB(stateToSave);
-        }, 30000);
-
-        return () => {
-            window.removeEventListener('beforeunload', handleBeforeUnload);
-            clearInterval(autoSaveInterval);
-            // Save on unmount as well
-            handleBeforeUnload();
-        };
-    }, []);
-
     // Track scroll position changes for the active tab (debounced)
     const handleScroll = () => {
         if (projectScrollRef.current && activeTab === 'project') {
@@ -568,6 +434,8 @@ const Project = () => {
         if (!str) return "";
         return str.charAt(0).toUpperCase() + str.slice(1);
     };
+
+
 
     // Helper to convert relative image URLs to absolute URLs
     const getAbsoluteImageUrl = (url: string | undefined | null): string | undefined => {
@@ -1853,6 +1721,44 @@ const Project = () => {
             return () => clearTimeout(timer);
         }
     }, [activeTab, showResults, instruments, accessories]);
+
+    // Sync URL with active tab
+    useEffect(() => {
+        // Skip URL manipulation if we are initially loading a search route
+        // This allows the initial search tab creation logic (below) to run first
+        const path = window.location.pathname;
+        if (activeTab === 'project' && (path.includes('/solution/search') || path === '/search')) {
+            return;
+        }
+
+        if (activeTab === 'project') {
+            // Only update if not already correct to minimize history noise
+            if (!path.endsWith('/solution') && path !== '/' && !path.includes('/search')) {
+                navigate('/solution', { replace: true });
+            }
+        } else {
+            if (!path.includes('/solution/search')) {
+                navigate('/solution/search', { replace: true });
+            }
+        }
+    }, [activeTab, navigate]);
+
+    // Handle initial route for /search or /solution/search
+    useEffect(() => {
+        const path = window.location.pathname;
+        // If user lands on search route but has no search tabs, create one
+        if ((path.includes('/solution/search') || path === '/search') && searchTabs.length === 0) {
+            const newTabId = `search_${Date.now()}`;
+            const newTab = {
+                id: newTabId,
+                title: 'Product Search',
+                input: '',
+                isDirectSearch: true
+            };
+            setSearchTabs([newTab]);
+            setActiveTab(newTabId);
+        }
+    }, []); // Run once on mount
 
     const resetDuplicateDialog = () => {
         setDuplicateNameDialogOpen(false);

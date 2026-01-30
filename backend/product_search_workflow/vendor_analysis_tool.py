@@ -58,6 +58,12 @@ except ImportError:
     def is_debug_enabled(module):
         return False
 
+# Issue-specific debug logging
+try:
+    from debug_flags import issue_debug
+except ImportError:
+    issue_debug = None
+
 
 class VendorAnalysisTool:
     """
@@ -152,9 +158,13 @@ class VendorAnalysisTool:
 
             if cache_key in self._response_cache:
                 logger.info("[VendorAnalysisTool] ✓ Cache hit - returning cached results (saves ~200-600 seconds)")
+                if issue_debug:
+                    issue_debug.cache_hit("vendor_analysis", cache_key[:16])
                 return self._response_cache[cache_key]
         except Exception as cache_check_error:
             logger.warning("[VendorAnalysisTool] Cache check failed: %s (continuing without cache)", cache_check_error)
+            if issue_debug:
+                issue_debug.cache_miss("vendor_analysis", str(cache_check_error)[:50])
 
         result = {
             "success": False,
@@ -173,8 +183,6 @@ class VendorAnalysisTool:
                 get_vendors_for_product_type,
                 get_products_for_vendors
             )
-            import json
-
             # Step 1: Setup LLM components
             logger.info("[VendorAnalysisTool] Step 1: Setting up LLM components")
             components = setup_langchain_components()

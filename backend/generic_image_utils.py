@@ -28,6 +28,12 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
+# Issue-specific debug logging for terminal log analysis
+try:
+    from debug_flags import issue_debug
+except ImportError:
+    issue_debug = None  # Fallback if debug_flags not available
+
 # Align environment keys with main.py
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY1") or os.getenv("GOOGLE_API_KEY")
 
@@ -148,6 +154,8 @@ def _generate_image_with_llm(product_type: str, retry_count: int = 0, max_retrie
         image_bytes = generated_image.image.image_bytes
         
         logger.info(f"[LLM_IMAGE_GEN] ✓ Successfully generated image for '{product_type}' (size: {len(image_bytes)} bytes)")
+        if issue_debug:
+            issue_debug.image_llm_generation(product_type, success=True, time_ms=0)
         
         return {
             'image_bytes': image_bytes,
@@ -326,6 +334,8 @@ def get_generic_image_from_azure(product_type: str) -> Optional[Dict[str, Any]]:
         # Parse metadata
         metadata = json.loads(metadata_bytes.decode('utf-8'))
         logger.info(f"[AZURE_CHECK] ✓ Found cached generic image in Azure Blob for: {product_type}")
+        if issue_debug:
+            issue_debug.cache_hit("azure_blob", normalized_type)
 
         return {
             'azure_blob_path': metadata.get('image_blob_path'),

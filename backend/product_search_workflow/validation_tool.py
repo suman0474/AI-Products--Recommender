@@ -607,7 +607,7 @@ class ValidationTool:
                         logger.info(f"[ValidationTool] ✓ Sources: {', '.join(sources) if sources else 'none'}")
 
                         print("\n" + "="*70)
-                        print("🔷 [DEEP AGENT] SCHEMA POPULATION COMPLETED")
+                        print("[DEEP_AGENT] SCHEMA POPULATION COMPLETED")
                         print(f"   Fields Populated: {fields_populated}/{total_fields}")
                         print(f"   Sources Used: {len(sources)}")
                         print("="*70 + "\n")
@@ -616,14 +616,14 @@ class ValidationTool:
                         logger.warning(f"[FIX5] Module not found - deep_agent_schema_populator: {e}")
                         logger.info("[FIX5] Using fallback for populate_schema_with_deep_agent")
                         print("\n" + "="*70)
-                        print("🔷 [DEEP AGENT] SCHEMA POPULATION COMPLETED")
+                        print("[DEEP_AGENT] SCHEMA POPULATION COMPLETED (fallback)")
                         print("   Fields Populated: 0/0")
                         print("   Sources Used: 0")
                         print("="*70 + "\n")
                     except Exception as e:
                         logger.warning(f"[ValidationTool] Deep Agent population failed (non-critical): {e}")
                         print("\n" + "="*70)
-                        print(f"🔷 [DEEP AGENT] POPULATION FAILED: {str(e)[:50]}")
+                        print(f"[DEEP_AGENT] POPULATION FAILED: {str(e)[:50]}")
                         print("="*70 + "\n")
 
                 except Exception as standards_error:
